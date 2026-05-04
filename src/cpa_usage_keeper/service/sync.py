@@ -1,16 +1,15 @@
-"""Sync service: orchestrates data ingestion from CPA (legacy export + redis)."""
+"""Sync service: orchestrates data ingestion from CPA via redis."""
 from __future__ import annotations
 import hashlib, json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 from loguru import logger
 from sqlalchemy.orm import Session
 from ..cpa.client import CPAClient
 from ..cpa.redis_queue import RedisQueueClient
-from ..cpa.types import StatisticsSnapshot, parse_usage_export
 from ..config import Config
 from ..database import get_session
-from ..models import UsageEvent, RedisUsageInbox
+from ..models import UsageEvent
 from ..repository import db as repo_db
 from ..repository import auth_files as repo_auth
 from ..repository import provider_metadata as repo_pm
@@ -20,8 +19,6 @@ def _to_naive_utc(dt: datetime) -> datetime:
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
-
-OVERLAP_WINDOW = timedelta(hours=4)
 
 class SyncService:
     def __init__(self, cfg: Config, cpa_client: CPAClient,
@@ -46,35 +43,6 @@ class SyncService:
         logger.info("Sync mode auto-detected: legacy_export")
         return "legacy_export"
 
-    def sync_legacy(self) -> dict:
-        db = get_session()
-        try:
-            fetched_at = datetime.now(timezone.utc)
-            result = self.cpa_client.fetch_usage_export()
-            payload_hash = hashlib.sha256(result.body).hexdigest() if result.body else ""
-            status = "pending" if result.status_code == 200 else "failed"
-            error_msg = "" if result.status_code == 200 else f"HTTP {result.status_code}"
-            run = repo_db.create_snapshot_run(
-                db, fetched_at=fetched_at, cpa_base_url=self.cfg.cpa_base_url,
-                exported_at=result.payload.exported_at,
-                version=str(result.payload.version), status=status,
-                http_status=result.status_code, payload_hash=payload_hash,
-                raw_payload=result.body, error_message=error_msg)
-            if status == "failed":
-                return {"status": "failed", "error": error_msg, "run_id": run.id}
-            events = self._flatten_export(result.payload, run.id, fetched_at)
-            events = self._filter_by_watermark(db, events)
-            inserted, deduped = repo_db.insert_usage_events(db, events)
-            repo_db.update_snapshot_run(db, run.id, status="completed",
-                                         inserted_events=inserted, deduped_events=deduped)
-            self._sync_metadata(db)
-            return {"status": "completed", "run_id": run.id, "inserted": inserted, "deduped": deduped}
-        except Exception as e:
-            logger.error(f"legacy sync failed: {e}")
-            return {"status": "failed", "error": str(e)}
-        finally:
-            db.close()
-
     def pull_redis_inbox(self) -> dict:
         if not self.redis_client:
             return {"status": "failed", "error": "redis client not configured"}
@@ -83,7 +51,7 @@ class SyncService:
             messages = self.redis_client.pop_usage()
             if not messages:
                 return {"status": "completed", "empty": True, "count": 0}
-            inputs = [{"queue_key": self.cfg.redis_queue_key, "raw_message": m,
+            inputs = [{"queue_key": self.cfg.redis_queue_key, "raw_message": _mask_raw_message(m),
                         "popped_at": datetime.now(timezone.utc)} for m in messages]
             rows = repo_inbox.insert_inbox_messages(db, inputs)
             return {"status": "completed", "empty": False, "count": len(rows)}
@@ -110,15 +78,12 @@ class SyncService:
                     repo_inbox.mark_decode_failed(db, row.id, str(e))
             if not events:
                 return {"status": "completed", "empty": True, "inserted_events": 0, "deduped_events": 0}
-            fetched_at = datetime.now(timezone.utc)
-            run = repo_db.create_snapshot_run(db, fetched_at=fetched_at,
-                                               cpa_base_url=self.cfg.cpa_base_url, status="pending")
             usage_events = [ev for _, ev in events]
             inserted, deduped = repo_db.insert_usage_events(db, usage_events)
+            now = datetime.now(timezone.utc)
             for row, ev in events:
-                repo_inbox.mark_processed(db, row.id, run.id, ev.event_key, datetime.now(timezone.utc))
-            repo_db.update_snapshot_run(db, run.id, status="completed",
-                                         inserted_events=inserted, deduped_events=deduped)
+                repo_inbox.mark_processed(db, row.id, ev.event_key, now)
+            db.commit()
             if sync_metadata:
                 self._sync_metadata(db)
             return {"status": "completed", "empty": False,
@@ -139,9 +104,6 @@ class SyncService:
     def cleanup_storage(self) -> None:
         db = get_session()
         try:
-            deleted = repo_db.cleanup_snapshot_runs(db, retention_count=100)
-            if deleted > 0:
-                logger.info(f"Cleaned up {deleted} old snapshot runs")
             p, f = repo_inbox.cleanup_inbox(db, datetime.now(timezone.utc))
             if p > 0 or f > 0:
                 logger.info(f"Cleaned up redis inbox: {p} processed, {f} failed")
@@ -215,33 +177,6 @@ class SyncService:
             logger.warning(f"fetch openai compatibility failed: {e}")
         return items, types
 
-    def _flatten_export(self, export, run_id: int, fetched_at: datetime) -> list[UsageEvent]:
-        events = []
-        for api_key, api_snap in export.usage.apis.items():
-            for model_name, model_snap in api_snap.models.items():
-                for detail in model_snap.details:
-                    tokens = detail.tokens
-                    normalized = _normalize_tokens(tokens)
-                    event_key = detail.source.strip() if detail.source else ""
-                    if not event_key:
-                        event_key = _build_event_key(api_key, model_name, detail.timestamp,
-                                                      detail.source, detail.auth_index,
-                                                      detail.failed, normalized)
-                    ts = detail.timestamp or fetched_at
-                    ts = _to_naive_utc(ts)
-                    events.append(UsageEvent(
-                        event_key=event_key, snapshot_run_id=run_id,
-                        api_group_key=api_key, model=model_name,
-                        timestamp=ts, source=detail.source.strip(),
-                        auth_index=detail.auth_index.strip(), failed=detail.failed,
-                        latency_ms=max(detail.latency_ms, 0),
-                        input_tokens=normalized["input_tokens"],
-                        output_tokens=normalized["output_tokens"],
-                        reasoning_tokens=normalized["reasoning_tokens"],
-                        cached_tokens=normalized["cached_tokens"],
-                        total_tokens=normalized["total_tokens"]))
-        return events
-
     def _decode_redis_message(self, message: str, popped_at: datetime) -> UsageEvent:
         data = json.loads(message)
         ts_str = data.get("timestamp", "")
@@ -257,7 +192,9 @@ class SyncService:
         tokens_data = data.get("tokens", {})
         normalized = _normalize_tokens(tokens_data)
         api_key = data.get("api_key") or data.get("provider") or data.get("endpoint") or "unknown"
-        model = data.get("model") or "unknown"
+        provider = (data.get("provider") or "").strip()
+        model_raw = (data.get("model") or "").strip()
+        model = f"{provider}/{model_raw}" if provider and model_raw else model_raw or "unknown"
         source = (data.get("source") or "").strip()
         auth_index = (data.get("auth_index") or "").strip()
         request_id = (data.get("request_id") or "").strip()
@@ -265,23 +202,14 @@ class SyncService:
         event_key = request_id or _build_event_key(
             api_key, model, ts, source, auth_index, failed, normalized)
         return UsageEvent(
-            event_key=event_key, api_group_key=api_key, model=model,
-            timestamp=ts, source=source, auth_index=auth_index,
+            event_key=event_key, api_group_key=_mask(api_key), model=model,
+            timestamp=ts, source=_mask(source), auth_index=auth_index,
             failed=failed, latency_ms=max(data.get("latency_ms", 0), 0),
             input_tokens=normalized["input_tokens"],
             output_tokens=normalized["output_tokens"],
             reasoning_tokens=normalized["reasoning_tokens"],
             cached_tokens=normalized["cached_tokens"],
             total_tokens=normalized["total_tokens"])
-
-    def _filter_by_watermark(self, db: Session, events: list[UsageEvent]) -> list[UsageEvent]:
-        if not events:
-            return events
-        wm = repo_db.find_latest_usage_event_timestamp(db)
-        if not wm:
-            return events
-        cutoff = wm - OVERLAP_WINDOW
-        return [e for e in events if not e.timestamp or e.timestamp >= cutoff]
 
 
 def _normalize_tokens(tokens) -> dict:
@@ -293,6 +221,24 @@ def _normalize_tokens(tokens) -> dict:
     tt = max(get("total_tokens", 0), it + ot)
     return {"input_tokens": it, "output_tokens": ot, "reasoning_tokens": rt,
             "cached_tokens": ct, "total_tokens": tt}
+
+def _mask(value: str) -> str:
+    if len(value) <= 6:
+        return value
+    return value[:3] + "***" + value[-3:]
+
+
+def _mask_raw_message(raw: str) -> str:
+    try:
+        data = json.loads(raw)
+        for field in ("source", "api_key"):
+            v = data.get(field)
+            if isinstance(v, str) and v:
+                data[field] = _mask(v)
+        return json.dumps(data, ensure_ascii=False)
+    except Exception:
+        return raw
+
 
 def _build_event_key(api_key, model, ts, source, auth_index, failed, tokens) -> str:
     parts = [str(api_key), str(model), ts.isoformat() if ts else "",

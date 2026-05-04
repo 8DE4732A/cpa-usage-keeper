@@ -1,6 +1,6 @@
 [project]
 name = "cpa-usage-keeper"
-version = "0.1.2"
+version = "0.1.3"
 description = "CPA usage persistence and visualization service"
 readme = "README.md"
 license = { text = "MIT" }
@@ -42,7 +42,7 @@ build-backend = "hatchling.build"
 packages = ["src/cpa_usage_keeper"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/cpa_usage_keeper/static" = "cpa_usage_keeper/static"
+"static" = "cpa_usage_keeper/static"
 
 
 [[tool.uv.index]]

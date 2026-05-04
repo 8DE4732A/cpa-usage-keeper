@@ -26,13 +26,10 @@ def insert_inbox_messages(db: Session, messages: list[dict]) -> list[RedisUsageI
     db.commit()
     return rows
 
-def mark_processed(db: Session, id_: int, snapshot_run_id: int | None, event_key: str, processed_at: datetime):
+def mark_processed(db: Session, id_: int, event_key: str, processed_at: datetime):
     updates = {"status": STATUS_PROCESSED, "usage_event_key": event_key,
                "processed_at": processed_at, "last_error": ""}
-    if snapshot_run_id is not None:
-        updates["snapshot_run_id"] = snapshot_run_id
     db.query(RedisUsageInbox).filter(RedisUsageInbox.id == id_).update(updates)
-    db.commit()
 
 def mark_decode_failed(db: Session, id_: int, error: str):
     _mark_failed(db, id_, STATUS_DECODE_FAILED, error)

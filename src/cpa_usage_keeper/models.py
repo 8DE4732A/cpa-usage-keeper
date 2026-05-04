@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Optional
-
-from sqlalchemy import Boolean, Column, DateTime, Float, Index, Integer, LargeBinary, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -13,32 +10,11 @@ class Base(DeclarativeBase):
     pass
 
 
-class SnapshotRun(Base):
-    __tablename__ = "snapshot_runs"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    fetched_at = Column(DateTime, index=True)
-    cpa_base_url = Column(String, default="")
-    exported_at = Column(DateTime, nullable=True)
-    version = Column(String, default="")
-    status = Column(String, default="pending", index=True)
-    http_status = Column(Integer, default=0)
-    payload_hash = Column(String, default="")
-    raw_payload = Column(LargeBinary, nullable=True)
-    backup_file_path = Column(String, default="")
-    error_message = Column(String, default="")
-    inserted_events = Column(Integer, default=0)
-    deduped_events = Column(Integer, default=0)
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-
-
 class UsageEvent(Base):
     __tablename__ = "usage_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     event_key = Column(String, unique=True, nullable=False)
-    snapshot_run_id = Column(Integer, default=0)
     api_group_key = Column(String, default="", index=True)
     model = Column(String, default="", index=True)
     timestamp = Column(DateTime, index=True)
@@ -64,7 +40,6 @@ class RedisUsageInbox(Base):
     status = Column(String, nullable=False, default="pending", index=True)
     attempt_count = Column(Integer, nullable=False, default=0)
     last_error = Column(String, default="")
-    snapshot_run_id = Column(Integer, nullable=True, index=True)
     usage_event_key = Column(String, default="", index=True)
     popped_at = Column(DateTime, nullable=False, index=True)
     processed_at = Column(DateTime, nullable=True)
@@ -118,4 +93,4 @@ class ModelPriceSetting(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
-ALL_MODELS = [SnapshotRun, UsageEvent, RedisUsageInbox, AuthFile, ProviderMetadata, ModelPriceSetting]
+ALL_MODELS = [UsageEvent, RedisUsageInbox, AuthFile, ProviderMetadata, ModelPriceSetting]

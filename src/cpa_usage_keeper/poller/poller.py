@@ -1,4 +1,4 @@
-"""Background pollers for legacy export and redis drain."""
+"""Background pollers for redis drain."""
 from __future__ import annotations
 import asyncio
 import threading
@@ -46,52 +46,6 @@ class PollerStatus:
             self.last_status = status
             self.last_error = error
             self.last_warning = warning
-
-
-class LegacyPoller:
-    def __init__(self, sync_service: SyncService, interval: timedelta,
-                 status: Optional[PollerStatus] = None):
-        self.sync_service = sync_service
-        self.interval = interval
-        self.status = status
-        self._running = False
-
-    async def run(self):
-        self._running = True
-        logger.info(f"Legacy poller started, interval={self.interval}")
-        try:
-            while self._running:
-                await self._do_sync()
-                await asyncio.sleep(self.interval.total_seconds())
-        finally:
-            self._running = False
-
-    async def sync_now(self):
-        """Trigger a manual sync."""
-        await self._do_sync()
-
-    async def _do_sync(self):
-        if self.status:
-            self.status.mark_sync_start()
-        try:
-            result = self.sync_service.sync_legacy()
-            status_str = result.get("status", "unknown")
-            error = result.get("error", "")
-            if status_str == "completed":
-                logger.info(f"Legacy sync completed: inserted={result.get('inserted', 0)}, deduped={result.get('deduped', 0)}")
-                if self.status:
-                    self.status.mark_sync_done(status=status_str)
-            else:
-                logger.warning(f"Legacy sync status: {status_str}, error: {error}")
-                if self.status:
-                    self.status.mark_sync_done(status=status_str, warning=error)
-        except Exception as e:
-            logger.error(f"Legacy poller error: {e}")
-            if self.status:
-                self.status.mark_sync_done(status="failed", error=str(e))
-
-    def stop(self):
-        self._running = False
 
 
 class RedisDrain:

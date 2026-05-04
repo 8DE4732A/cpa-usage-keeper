@@ -15,7 +15,7 @@ from .cpa.client import CPAClient
 from .cpa.redis_queue import RedisQueueClient
 from .service.sync import SyncService
 from .backup import BackupWriter
-from .poller.poller import PollerStatus, LegacyPoller, RedisDrain, MaintenanceRunner, BackupRunner
+from .poller.poller import PollerStatus, RedisDrain, MaintenanceRunner, BackupRunner
 from .api.router import create_api_router
 
 @asynccontextmanager
@@ -36,9 +36,7 @@ async def lifespan(app: FastAPI):
         app.state.active_poller = drain
         background_tasks.append(asyncio.create_task(drain.run()))
     else:
-        poller = LegacyPoller(sync_service, cfg.poll_interval, status=poller_status)
-        app.state.active_poller = poller
-        background_tasks.append(asyncio.create_task(poller.run()))
+        logger.warning("Sync mode is not redis; no poller started")
 
     maintenance = MaintenanceRunner(sync_service)
     background_tasks.append(asyncio.create_task(maintenance.run()))
