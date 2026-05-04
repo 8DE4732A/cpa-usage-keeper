@@ -8,6 +8,7 @@ config.toml
 config.*
 !config.example.toml
 !deploy/.config.example.toml
+!src/cpa_usage_keeper/config.py
 
 # runtime data
 /data/
