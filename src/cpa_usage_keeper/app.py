@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from loguru import logger
 from .config import Config, load_config
 from .database import init_database, close_database
@@ -103,6 +103,14 @@ def create_app(config_file: str = "config.toml") -> FastAPI:
     _repo_static = Path(__file__).parent.parent.parent / "static"
     static_dir = _pkg_static if _pkg_static.exists() else _repo_static
     if static_dir.exists():
+        index_file = static_dir / "index.html"
+
+        def _render_index() -> HTMLResponse:
+            html = index_file.read_text(encoding="utf-8").replace(
+                '"__APP_BASE_PATH__"', f'"{base_path}"'
+            )
+            return HTMLResponse(content=html)
+
         # SPA fallback: serve index.html for non-API, non-static routes
         @app.middleware("http")
         async def spa_fallback(request, call_next):
@@ -114,13 +122,18 @@ def create_app(config_file: str = "config.toml") -> FastAPI:
                     and not path.startswith("/api/")
                     and not path.startswith("/healthz")
                     and "." not in path.split("/")[-1]):
-                index_file = static_dir / "index.html"
                 if index_file.exists():
-                    return FileResponse(str(index_file))
+                    return _render_index()
             return response
 
         mount_path = f"{base_path}/" if base_path else "/"
-        app.mount(mount_path, StaticFiles(directory=str(static_dir), html=True), name="static")
+        # Serve index.html with base_path injected for root and SPA routes
+        @app.get(base_path or "/", include_in_schema=False)
+        @app.get(f"{base_path}/", include_in_schema=False)
+        async def serve_index():
+            return _render_index()
+
+        app.mount(mount_path, StaticFiles(directory=str(static_dir), html=False), name="static")
 
     logger.info(f"CPA Usage Keeper started on port {cfg.app_port}, base_path='{cfg.app_base_path}'")
     return app
