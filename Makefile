@@ -1,16 +1,34 @@
-.PHONY: verify verify-backend verify-frontend verify-docker
+.PHONY: dev build-web install verify clean
 
-verify: verify-backend verify-frontend
+# Install Python dependencies
+install:
+	uv sync
 
-verify-backend:
-	go test ./cmd/... ./internal/...
+# Run backend in development mode
+dev:
+	uv run python -m cpa_usage_keeper
 
-verify-frontend:
+# Install frontend dependencies
+web-install:
 	npm --prefix ./web ci
+
+# Run frontend dev server
+web-dev:
+	npm --prefix ./web run dev -- --host 127.0.0.1
+
+# Build frontend production assets
+build-web:
+	npm --prefix ./web run build
+
+# Run all verifications
+verify: web-install
 	npm --prefix ./web run test
 	npm --prefix ./web run lint
 	npm --prefix ./web run typecheck
 	npm --prefix ./web run build
 
-verify-docker:
-	docker build -t cpa-usage-keeper:ci .
+# Clean build artifacts
+clean:
+	rm -rf static/
+	rm -rf .venv/
+	rm -rf src/cpa_usage_keeper/__pycache__/

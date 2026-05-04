@@ -4,10 +4,10 @@
 .worktrees/
 
 # local environment files
-.env
-.env.*
-!.env.example
-!deploy/.env.example
+config.toml
+config.*
+!config.example.toml
+!deploy/.config.example.toml
 
 # runtime data
 /data/
@@ -20,8 +20,8 @@ backups/
 
 # frontend dependencies and build output
 web/node_modules/
-web/dist/
-web/dist-ssr/
+static/
+src/cpa_usage_keeper/static/
 
 # logs
 logs/
@@ -44,3 +44,16 @@ lerna-debug.log*
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+.eggs/
+*.egg
+.mypy_cache/
+.ruff_cache/

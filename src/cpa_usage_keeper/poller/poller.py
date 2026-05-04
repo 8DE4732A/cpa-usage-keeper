@@ -1,0 +1,254 @@
+"""Background pollers for legacy export and redis drain."""
+from __future__ import annotations
+import asyncio
+import threading
+import time as _time
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+from loguru import logger
+from ..service.sync import SyncService
+
+
+class PollerStatus:
+    """Thread-safe status tracker shared between pollers and API."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.running = True
+        self.sync_running = False
+        self.last_run_at: Optional[datetime] = None
+        self.last_error = ""
+        self.last_warning = ""
+        self.last_status = ""
+
+    def to_dict(self) -> dict:
+        with self._lock:
+            result = {
+                "running": self.running,
+                "sync_running": self.sync_running,
+                "timezone": str(_time.tzname),
+                "last_error": self.last_error,
+                "last_warning": self.last_warning,
+                "last_status": self.last_status,
+            }
+            if self.last_run_at:
+                result["last_run_at"] = self.last_run_at.isoformat()
+            return result
+
+    def mark_sync_start(self):
+        with self._lock:
+            self.sync_running = True
+
+    def mark_sync_done(self, status: str = "", error: str = "", warning: str = ""):
+        with self._lock:
+            self.sync_running = False
+            self.last_run_at = datetime.now(timezone.utc)
+            self.last_status = status
+            self.last_error = error
+            self.last_warning = warning
+
+
+class LegacyPoller:
+    def __init__(self, sync_service: SyncService, interval: timedelta,
+                 status: Optional[PollerStatus] = None):
+        self.sync_service = sync_service
+        self.interval = interval
+        self.status = status
+        self._running = False
+
+    async def run(self):
+        self._running = True
+        logger.info(f"Legacy poller started, interval={self.interval}")
+        try:
+            while self._running:
+                await self._do_sync()
+                await asyncio.sleep(self.interval.total_seconds())
+        finally:
+            self._running = False
+
+    async def sync_now(self):
+        """Trigger a manual sync."""
+        await self._do_sync()
+
+    async def _do_sync(self):
+        if self.status:
+            self.status.mark_sync_start()
+        try:
+            result = self.sync_service.sync_legacy()
+            status_str = result.get("status", "unknown")
+            error = result.get("error", "")
+            if status_str == "completed":
+                logger.info(f"Legacy sync completed: inserted={result.get('inserted', 0)}, deduped={result.get('deduped', 0)}")
+                if self.status:
+                    self.status.mark_sync_done(status=status_str)
+            else:
+                logger.warning(f"Legacy sync status: {status_str}, error: {error}")
+                if self.status:
+                    self.status.mark_sync_done(status=status_str, warning=error)
+        except Exception as e:
+            logger.error(f"Legacy poller error: {e}")
+            if self.status:
+                self.status.mark_sync_done(status="failed", error=str(e))
+
+    def stop(self):
+        self._running = False
+
+
+class RedisDrain:
+    def __init__(self, sync_service: SyncService, idle_interval: timedelta,
+                 error_backoff: timedelta, metadata_interval: timedelta,
+                 status: Optional[PollerStatus] = None):
+        self.sync_service = sync_service
+        self.idle_interval = idle_interval
+        self.error_backoff = error_backoff
+        self.metadata_interval = metadata_interval
+        self.status = status
+        self._running = False
+        self._last_metadata_sync = None
+
+    async def run(self):
+        self._running = True
+        logger.info("Redis drain started")
+        pull_task = asyncio.create_task(self._pull_loop())
+        process_task = asyncio.create_task(self._process_loop())
+        try:
+            await asyncio.gather(pull_task, process_task)
+        except asyncio.CancelledError:
+            pull_task.cancel()
+            process_task.cancel()
+            await asyncio.gather(pull_task, process_task, return_exceptions=True)
+            raise
+        finally:
+            self._running = False
+
+    async def sync_now(self):
+        """Trigger a manual pull + process cycle."""
+        if self.status:
+            self.status.mark_sync_start()
+        try:
+            self.sync_service.pull_redis_inbox()
+            result = self.sync_service.process_redis_inbox(sync_metadata=True)
+            self._last_metadata_sync = datetime.now(timezone.utc)
+            status_str = result.get("status", "unknown")
+            error = result.get("error", "")
+            if status_str == "completed":
+                if self.status:
+                    self.status.mark_sync_done(status=status_str)
+            else:
+                if self.status:
+                    self.status.mark_sync_done(status=status_str, warning=error)
+        except Exception as e:
+            logger.error(f"Manual redis sync error: {e}")
+            if self.status:
+                self.status.mark_sync_done(status="failed", error=str(e))
+
+    async def _pull_loop(self):
+        logger.info(f"Redis pull loop started, idle_interval={self.idle_interval}")
+        while self._running:
+            try:
+                result = self.sync_service.pull_redis_inbox()
+                if result.get("status") == "completed" and not result.get("empty", True):
+                    if self.status:
+                        self.status.mark_sync_done(status="completed")
+                if result.get("empty", True):
+                    await asyncio.sleep(self.idle_interval.total_seconds())
+            except Exception as e:
+                logger.error(f"Redis pull error: {e}")
+                if self.status:
+                    self.status.mark_sync_done(status="failed", error=str(e))
+                await asyncio.sleep(self.error_backoff.total_seconds())
+
+    async def _process_loop(self):
+        logger.info("Redis process loop started, interval=5s")
+        while self._running:
+            await asyncio.sleep(5)
+            try:
+                sync_meta = self._should_sync_metadata()
+                result = self.sync_service.process_redis_inbox(sync_metadata=sync_meta)
+                if sync_meta and result.get("status") == "completed":
+                    self._last_metadata_sync = datetime.now(timezone.utc)
+            except Exception as e:
+                logger.error(f"Redis process error: {e}")
+
+    def _should_sync_metadata(self) -> bool:
+        if self._last_metadata_sync is None:
+            return True
+        return datetime.now(timezone.utc) - self._last_metadata_sync >= self.metadata_interval
+
+    def stop(self):
+        self._running = False
+
+
+class MaintenanceRunner:
+    def __init__(self, sync_service: SyncService):
+        self.sync_service = sync_service
+        self._running = False
+
+    async def run(self):
+        self._running = True
+        logger.info("Maintenance runner started")
+        while self._running:
+            now = datetime.now()
+            local_now = now.astimezone()
+            next_cleanup = local_now.replace(hour=3, minute=0, second=0, microsecond=0)
+            if local_now >= next_cleanup:
+                next_cleanup += timedelta(days=1)
+            delay = (next_cleanup - local_now).total_seconds()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if not self._running:
+                break
+            try:
+                self.sync_service.cleanup_storage()
+                logger.info("Daily storage cleanup completed")
+            except Exception as e:
+                logger.error(f"Storage cleanup failed: {e}")
+
+    def stop(self):
+        self._running = False
+
+
+class BackupRunner:
+    def __init__(self, backup_writer, db_path: str, interval: timedelta, retention_days: int):
+        self.backup_writer = backup_writer
+        self.db_path = db_path
+        self.interval = interval
+        self.retention_days = retention_days
+        self._running = False
+        self._last_backup = None
+        self._retry_count = 0
+
+    async def run(self):
+        self._running = True
+        logger.info(f"Backup runner started, interval={self.interval}")
+        last = self.backup_writer.last_backup_at()
+        if last:
+            self._last_backup = last
+
+        while self._running:
+            delay = self._next_delay()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if not self._running:
+                break
+            try:
+                path = self.backup_writer.write_database(self.db_path)
+                logger.info(f"Database backup created: {path}")
+                self._last_backup = datetime.now()
+                self._retry_count = 0
+                self.backup_writer.cleanup(self.retention_days)
+            except Exception as e:
+                logger.error(f"Database backup failed: {e}")
+                self._retry_count += 1
+
+    def _next_delay(self) -> float:
+        if self._retry_count > 0 and self._retry_count <= 3:
+            return 15 * 60  # 15 min retry
+        if self._last_backup is None:
+            return 0
+        elapsed = (datetime.now() - self._last_backup).total_seconds()
+        remaining = self.interval.total_seconds() - elapsed
+        return max(remaining, 0)
+
+    def stop(self):
+        self._running = False
