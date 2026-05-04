@@ -47,7 +47,7 @@ jobs:
           sed -i "s/^version = .*/version = \"$TAG\"/" pyproject.toml
 
       - name: Build package
-        run: python -m build
+        run: python -m build --wheel
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
