@@ -1,6 +1,6 @@
 [project]
 name = "cpa-usage-keeper"
-version = "0.1.1"
+version = "0.1.2"
 description = "CPA usage persistence and visualization service"
 readme = "README.md"
 license = { text = "MIT" }
