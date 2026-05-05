@@ -43,8 +43,3 @@ packages = ["src/cpa_usage_keeper"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "static" = "cpa_usage_keeper/static"
-
-
-[[tool.uv.index]]
-url = "http://mirrors.aliyun.com/pypi/simple"
-default = true

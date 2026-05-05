@@ -8,6 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 from sqlalchemy.orm import Session
+
+
+def _utc_isoformat(dt: datetime | None) -> str:
+    if not dt:
+        return ""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 from ..database import get_db
 from ..repository import usage as repo_usage
 from ..repository import pricing as repo_pricing
@@ -237,7 +243,7 @@ def create_api_router(session_manager: Optional[SessionManager] = None,
         for ev in rows["events"]:
             resolved = _source_resolution(ev.source or "", ev.auth_index or "", auth_files, pm)
             events_payload.append({
-                "id": ev.id, "timestamp": ev.timestamp.isoformat() if ev.timestamp else "",
+                "id": ev.id, "timestamp": _utc_isoformat(ev.timestamp),
                 "model": (ev.model or "").strip(), "source": resolved["display_name"],
                 "source_type": resolved["source_type"], "source_key": resolved["source_key"],
                 "auth_index": (ev.auth_index or "").strip(), "failed": ev.failed or False,
@@ -409,7 +415,7 @@ def _snapshot_to_dict(snap) -> dict:
             models[mk] = {
                 "total_requests": ms.total_requests, "success_count": ms.success_count,
                 "failure_count": ms.failure_count, "total_tokens": ms.total_tokens,
-                "details": [{"timestamp": d.timestamp.isoformat() if d.timestamp else "",
+                "details": [{"timestamp": _utc_isoformat(d.timestamp),
                              "latency_ms": d.latency_ms, "source": d.source,
                              "source_raw": d.source_raw, "source_display": getattr(d, 'source_display', ''),
                              "source_type": getattr(d, 'source_type', ''),
