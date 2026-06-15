@@ -25,7 +25,7 @@ class RedisQueueClient:
         redis_queue_addr: str,
         management_key: str,
         timeout: timedelta,
-        queue_key: str = "queue",
+        queue_key: str = "usage",
         batch_size: int = 1000,
     ):
         self.address = _redis_queue_address(base_url, redis_queue_addr)
