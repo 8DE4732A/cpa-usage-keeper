@@ -16,6 +16,7 @@ def _utc_isoformat(dt: datetime | None) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 from ..database import get_db
 from ..repository import usage as repo_usage
+from ..repository import notification as repo_notify
 from ..repository import pricing as repo_pricing
 from ..repository import auth_files as repo_auth
 from ..repository import provider_metadata as repo_pm
@@ -309,9 +310,16 @@ def create_api_router(session_manager: Optional[SessionManager] = None,
     def list_pricing(request: Request, db: Session = Depends(get_db)):
         _check_auth(request, session_manager, auth_enabled)
         settings = repo_pricing.list_pricing(db)
-        return {"pricing": [{"model": s.model, "prompt_price_per_1m": s.prompt_price_per_1m,
-                              "completion_price_per_1m": s.completion_price_per_1m,
-                              "cache_price_per_1m": s.cache_price_per_1m} for s in settings]}
+        return {"pricing": [{
+            "model": s.model,
+            "prompt_price_per_1m": s.prompt_price_per_1m,
+            "completion_price_per_1m": s.completion_price_per_1m,
+            "cache_price_per_1m": s.cache_price_per_1m,
+            "openrouter_model_id": s.openrouter_model_id,
+            "openrouter_prompt_price_per_1m": s.openrouter_prompt_price_per_1m,
+            "openrouter_completion_price_per_1m": s.openrouter_completion_price_per_1m,
+            "openrouter_cache_price_per_1m": s.openrouter_cache_price_per_1m,
+        } for s in settings]}
 
     @router.put("/api/v1/pricing")
     async def update_pricing(request: Request, db: Session = Depends(get_db)):
@@ -332,6 +340,155 @@ def create_api_router(session_manager: Optional[SessionManager] = None,
         if not model:
             raise HTTPException(400, "model is required")
         repo_pricing.delete_pricing(db, model)
+        return Response(status_code=204)
+
+    @router.get("/api/v1/pricing/openrouter-models")
+    def get_openrouter_models(request: Request, db: Session = Depends(get_db)):
+        _check_auth(request, session_manager, auth_enabled)
+        try:
+            or_models = repo_pricing.fetch_openrouter_models()
+        except Exception as exc:
+            raise HTTPException(502, f"Failed to fetch OpenRouter models: {exc}")
+        return {"models": [{
+            "id": m.get("id", ""),
+            "name": m.get("name", ""),
+            "prompt_price_per_1m": repo_pricing.or_price(m.get("pricing", {}), "prompt"),
+            "completion_price_per_1m": repo_pricing.or_price(m.get("pricing", {}), "completion"),
+            "cache_price_per_1m": repo_pricing.or_price(m.get("pricing", {}), "input_cache_read"),
+        } for m in or_models]}
+
+    @router.post("/api/v1/pricing/sync-openrouter")
+    def sync_openrouter(request: Request, db: Session = Depends(get_db)):
+        _check_auth(request, session_manager, auth_enabled)
+        result = repo_pricing.sync_openrouter_prices(db)
+        if result["errors"]:
+            raise HTTPException(502, "; ".join(result["errors"]))
+        return result
+
+    # -- Notification Channels & Rules --
+    @router.get("/api/v1/notification/channels")
+    def list_notification_channels(request: Request, db: Session = Depends(get_db)):
+        _check_auth(request, session_manager, auth_enabled)
+        return {"channels": repo_notify.list_channels(db)}
+
+    @router.post("/api/v1/notification/channels")
+    async def create_notification_channel(request: Request, db: Session = Depends(get_db)):
+        _check_auth(request, session_manager, auth_enabled)
+        body = await request.json()
+        name = (body.get("name") or "").strip()
+        channel_type = (body.get("channel_type") or "").strip()
+        config = body.get("config", {})
+        enabled = body.get("enabled", True)
+        if not name:
+            raise HTTPException(400, "name is required")
+        if not channel_type:
+            raise HTTPException(400, "channel_type is required")
+        if not config.get("webhook_url"):
+            raise HTTPException(400, "config.webhook_url is required")
+        ch = repo_notify.create_channel(db, name, channel_type, config, enabled)
+        return ch
+
+    @router.put("/api/v1/notification/channels/{channel_id}")
+    async def update_notification_channel(
+        request: Request, channel_id: int, db: Session = Depends(get_db)
+    ):
+        _check_auth(request, session_manager, auth_enabled)
+        body = await request.json()
+        ch = repo_notify.update_channel(
+            db, channel_id,
+            name=body.get("name"),
+            channel_type=body.get("channel_type"),
+            config=body.get("config"),
+            enabled=body.get("enabled"),
+        )
+        if ch is None:
+            raise HTTPException(404, "channel not found")
+        return ch
+
+    @router.delete("/api/v1/notification/channels/{channel_id}")
+    def delete_notification_channel(
+        request: Request, channel_id: int, db: Session = Depends(get_db)
+    ):
+        _check_auth(request, session_manager, auth_enabled)
+        ok = repo_notify.delete_channel(db, channel_id)
+        if not ok:
+            raise HTTPException(404, "channel not found")
+        return Response(status_code=204)
+
+    @router.post("/api/v1/notification/channels/{channel_id}/test")
+    def test_notification_channel(
+        request: Request, channel_id: int, db: Session = Depends(get_db)
+    ):
+        _check_auth(request, session_manager, auth_enabled)
+        try:
+            repo_notify.test_webhook(db, channel_id)
+            return {"status": "ok"}
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        except Exception as e:
+            raise HTTPException(502, f"Webhook test failed: {e}")
+
+    @router.get("/api/v1/notification/rules")
+    def list_notification_rules(request: Request, db: Session = Depends(get_db)):
+        _check_auth(request, session_manager, auth_enabled)
+        return {"rules": repo_notify.list_rules(db)}
+
+    @router.post("/api/v1/notification/rules")
+    async def create_notification_rule(request: Request, db: Session = Depends(get_db)):
+        _check_auth(request, session_manager, auth_enabled)
+        body = await request.json()
+        name = (body.get("name") or "").strip()
+        channel_id = body.get("channel_id")
+        rule_type = (body.get("rule_type") or "").strip()
+        config = body.get("config", {})
+        enabled = body.get("enabled", True)
+        cooldown_minutes = body.get("cooldown_minutes", 30)
+        if not name:
+            raise HTTPException(400, "name is required")
+        if not channel_id:
+            raise HTTPException(400, "channel_id is required")
+        if not rule_type:
+            raise HTTPException(400, "rule_type is required")
+        if rule_type not in ("token_threshold", "connection_failure"):
+            raise HTTPException(400, f"unsupported rule_type: {rule_type}")
+        try:
+            rule = repo_notify.create_rule(
+                db, name, channel_id, rule_type, config, enabled, cooldown_minutes
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return rule
+
+    @router.put("/api/v1/notification/rules/{rule_id}")
+    async def update_notification_rule(
+        request: Request, rule_id: int, db: Session = Depends(get_db)
+    ):
+        _check_auth(request, session_manager, auth_enabled)
+        body = await request.json()
+        try:
+            rule = repo_notify.update_rule(
+                db, rule_id,
+                name=body.get("name"),
+                channel_id=body.get("channel_id"),
+                rule_type=body.get("rule_type"),
+                config=body.get("config"),
+                enabled=body.get("enabled"),
+                cooldown_minutes=body.get("cooldown_minutes"),
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if rule is None:
+            raise HTTPException(404, "rule not found")
+        return rule
+
+    @router.delete("/api/v1/notification/rules/{rule_id}")
+    def delete_notification_rule(
+        request: Request, rule_id: int, db: Session = Depends(get_db)
+    ):
+        _check_auth(request, session_manager, auth_enabled)
+        ok = repo_notify.delete_rule(db, rule_id)
+        if not ok:
+            raise HTTPException(404, "rule not found")
         return Response(status_code=204)
 
     # -- Provider Metadata --

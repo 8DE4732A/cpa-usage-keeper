@@ -25,6 +25,11 @@ export interface ModelPrice {
   cache: number;
 }
 
+/** Extract the last /-segment of a model name, stripping any :suffix. */
+export function extractModelKey(fullName: string): string {
+  return fullName.split(':')[0].split('/').pop() || fullName;
+}
+
 export interface ChartDataset {
   label: string;
   data: number[];

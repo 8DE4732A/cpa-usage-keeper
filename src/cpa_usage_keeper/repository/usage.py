@@ -6,6 +6,7 @@ from typing import Optional
 from sqlalchemy import case, func, literal_column
 from sqlalchemy.orm import Session
 from ..models import UsageEvent, ModelPriceSetting
+from .pricing import effective_price
 from ..cpa.types import StatisticsSnapshot, APISnapshot, ModelSnapshot, RequestDetail, TokenStats
 
 class UsageQueryFilter:
@@ -180,7 +181,9 @@ def build_usage_overview(db: Session, f: UsageQueryFilter):
         pricing = pricing_map.get(model_name)
         if pricing is None:
             summary["cost_available"] = False
-        cost = _calc_cost(ev, pricing) if pricing else 0.0
+            cost = 0.0
+        else:
+            cost = _calc_cost(ev, pricing)
         summary["total_cost"] += cost
         summary["cached_tokens"] += ev.cached_tokens or 0
         summary["reasoning_tokens"] += ev.reasoning_tokens or 0
@@ -274,9 +277,12 @@ def _calc_cost(ev: UsageEvent, pricing: ModelPriceSetting) -> float:
     output_t = max(ev.output_tokens or 0, 0)
     cached_t = max(ev.cached_tokens or 0, 0)
     prompt_t = max(input_t - cached_t, 0)
-    return ((prompt_t / 1_000_000) * pricing.prompt_price_per_1m +
-            (output_t / 1_000_000) * pricing.completion_price_per_1m +
-            (cached_t / 1_000_000) * pricing.cache_price_per_1m)
+    prompt_px = effective_price(pricing, "prompt_price_per_1m")
+    completion_px = effective_price(pricing, "completion_price_per_1m")
+    cache_px = effective_price(pricing, "cache_price_per_1m")
+    return ((prompt_t / 1_000_000) * prompt_px +
+            (output_t / 1_000_000) * completion_px +
+            (cached_t / 1_000_000) * cache_px)
 
 def _compute_window_minutes(f: UsageQueryFilter) -> int:
     if not f.start_time or not f.end_time:

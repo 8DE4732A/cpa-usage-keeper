@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -89,8 +89,44 @@ class ModelPriceSetting(Base):
     prompt_price_per_1m = Column(Float, default=0.0)
     completion_price_per_1m = Column(Float, default=0.0)
     cache_price_per_1m = Column(Float, default=0.0)
+    openrouter_model_id = Column(String, nullable=True)
+    openrouter_prompt_price_per_1m = Column(Float, nullable=True)
+    openrouter_completion_price_per_1m = Column(Float, nullable=True)
+    openrouter_cache_price_per_1m = Column(Float, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
-ALL_MODELS = [UsageEvent, RedisUsageInbox, AuthFile, ProviderMetadata, ModelPriceSetting]
+class NotificationChannel(Base):
+    __tablename__ = "notification_channels"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    channel_type = Column(String(50), nullable=False)  # "wecom_bot"
+    config = Column(JSON, nullable=False)  # {"webhook_url": "https://qyapi.weixin.qq.com/..."}
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class NotificationRule(Base):
+    __tablename__ = "notification_rules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    channel_id = Column(Integer, ForeignKey("notification_channels.id", ondelete="CASCADE"), nullable=False)
+    rule_type = Column(String(50), nullable=False)  # "token_threshold" | "connection_failure"
+    config = Column(JSON, nullable=False)
+    # token_threshold:    {"threshold": 1000000, "window_minutes": 60}
+    # connection_failure: {"window_minutes": 60}
+    enabled = Column(Boolean, default=True)
+    cooldown_minutes = Column(Integer, default=30)
+    last_notified_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+ALL_MODELS = [
+    UsageEvent, RedisUsageInbox, AuthFile, ProviderMetadata,
+    ModelPriceSetting, NotificationChannel, NotificationRule,
+]

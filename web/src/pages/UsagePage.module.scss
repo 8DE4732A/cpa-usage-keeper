@@ -1272,6 +1272,54 @@
   gap: 12px;
 }
 
+.orSyncRow {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.orSyncButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.orBadge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 0.65rem;
+  border-radius: 4px;
+  background-color: var(--accent-secondary, #e0e7ff);
+  color: var(--accent-primary, #6366f1);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.orBadgeCustom {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 0.65rem;
+  border-radius: 4px;
+  background-color: var(--success-bg, #d1fae5);
+  color: var(--success-text, #059669);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.orReferencePrice {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--text-tertiary, #9ca3af);
+}
+
+.orReferenceLabel {
+  font-style: italic;
+}
+
 // Chart Section (80%比例)
 .chartSection {
   display: flex;
@@ -1967,5 +2015,113 @@
   .healthLegendBlock {
     width: 8px;
     height: 8px;
+  }
+
+  // ── Notification Settings ────────────────────────────────────
+
+  .notifySection {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+
+  .notifySection:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+  }
+
+  .notifySectionHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .notifySectionTitle {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--text-primary);
+  }
+
+  .notifyList {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .notifyItem {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .notifyItemInfo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .notifyItemName {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+  }
+
+  .channelTypeBadge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 4px;
+    background: var(--accent-bg, rgba(99, 102, 241, 0.1));
+    color: var(--accent, #6366f1);
+    white-space: nowrap;
+  }
+
+  .notifyItemMeta {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 300px;
+  }
+
+  .notifyItemChannel {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+
+  .notifyItemStatus {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  .notifyItemActions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .loadingContainer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 0;
   }
 }

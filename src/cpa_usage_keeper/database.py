@@ -11,10 +11,45 @@ from sqlalchemy.orm import Session, sessionmaker
 from .config import Config
 from .models import Base
 
-
 _engine = None
 _SessionLocal = None
 
+# ── Lightweight auto-migration ──────────────────────────────────────────────
+# Keyed by table name; each entry is a list of (column_name, sql_type_def).
+# Only nullable or default-valued columns can be added this way.
+_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "model_price_settings": [
+        ("openrouter_model_id", "VARCHAR"),
+        ("openrouter_prompt_price_per_1m", "FLOAT"),
+        ("openrouter_completion_price_per_1m", "FLOAT"),
+        ("openrouter_cache_price_per_1m", "FLOAT"),
+    ],
+}
+
+
+def _auto_migrate(engine) -> None:
+    """Add missing columns for known tables without dropping existing data."""
+    with engine.connect() as conn:
+        for table_name, columns in _MIGRATIONS.items():
+            # Get existing column names from SQLite pragma
+            existing = {
+                row[1]
+                for row in conn.execute(
+                    text(f"PRAGMA table_info({table_name})")
+                ).fetchall()
+            }
+            for col_name, col_type in columns:
+                if col_name not in existing:
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE {table_name} "
+                            f"ADD COLUMN {col_name} {col_type} NULL"
+                        )
+                    )
+        conn.commit()
+
+
+# ── Initialization ──────────────────────────────────────────────────────────
 
 def init_database(cfg: Config) -> None:
     """Initialize the SQLite database with WAL mode and auto-migrate."""
@@ -35,6 +70,7 @@ def init_database(cfg: Config) -> None:
         cursor.close()
 
     Base.metadata.create_all(bind=_engine)
+    _auto_migrate(_engine)
     _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
 
 

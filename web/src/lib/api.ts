@@ -1,4 +1,4 @@
-import type { AuthSessionResponse, PricingEntry, PricingResponse, StatusResponse, UsageAnalysisResponse, UsageEventFilterOptionsResponse, UsedModelsResponse, UsageCredentialsResponse, UsageEventsResponse, UsageOverviewResponse } from './types'
+import type { AuthSessionResponse, NotificationChannel, NotificationChannelsResponse, NotificationRule, NotificationRulesResponse, OpenRouterModelsResponse, PricingEntry, PricingResponse, StatusResponse, SyncOpenRouterResponse, UsageAnalysisResponse, UsageEventFilterOptionsResponse, UsedModelsResponse, UsageCredentialsResponse, UsageEventsResponse, UsageOverviewResponse } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -237,3 +237,135 @@ export async function deletePricing(model: string): Promise<void> {
     await parseApiError(response, `Failed to delete pricing: ${response.status}`)
   }
 }
+
+export async function fetchOpenRouterModels(signal?: AbortSignal): Promise<OpenRouterModelsResponse> {
+  const response = await apiFetch(apiPath('/pricing/openrouter-models'), { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to fetch OpenRouter models: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function syncOpenRouterPrices(): Promise<SyncOpenRouterResponse> {
+  const response = await apiFetch(apiPath('/pricing/sync-openrouter'), {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to sync OpenRouter prices: ${response.status}`)
+  }
+  return response.json()
+}
+
+  // ── Notification Channels ───────────────────────────────────────────────
+
+  export async function fetchNotificationChannels(signal?: AbortSignal): Promise<NotificationChannelsResponse> {
+    const response = await apiFetch(apiPath('/notification/channels'), { signal })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to load notification channels: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  export async function createNotificationChannel(data: {
+    name: string
+    channel_type: string
+    config: { webhook_url: string }
+    enabled?: boolean
+  }): Promise<NotificationChannel> {
+    const response = await apiFetch(apiPath('/notification/channels'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to create notification channel: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  export async function updateNotificationChannel(
+    id: number,
+    data: { name?: string; channel_type?: string; config?: { webhook_url: string }; enabled?: boolean }
+  ): Promise<NotificationChannel> {
+    const response = await apiFetch(apiPath(`/notification/channels/${id}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to update notification channel: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  export async function deleteNotificationChannel(id: number): Promise<void> {
+    const response = await apiFetch(apiPath(`/notification/channels/${id}`), {
+      method: 'DELETE',
+    })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to delete notification channel: ${response.status}`)
+    }
+  }
+
+  export async function testNotificationWebhook(id: number): Promise<{ status: string }> {
+    const response = await apiFetch(apiPath(`/notification/channels/${id}/test`), {
+      method: 'POST',
+    })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to test notification webhook: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  // ── Notification Rules ───────────────────────────────────────────────────
+
+  export async function fetchNotificationRules(signal?: AbortSignal): Promise<NotificationRulesResponse> {
+    const response = await apiFetch(apiPath('/notification/rules'), { signal })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to load notification rules: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  export async function createNotificationRule(data: {
+    name: string
+    channel_id: number
+    rule_type: string
+    config: { threshold?: number; window_minutes: number }
+    enabled?: boolean
+    cooldown_minutes?: number
+  }): Promise<NotificationRule> {
+    const response = await apiFetch(apiPath('/notification/rules'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to create notification rule: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  export async function updateNotificationRule(
+    id: number,
+    data: { name?: string; channel_id?: number; rule_type?: string; config?: object; enabled?: boolean; cooldown_minutes?: number }
+  ): Promise<NotificationRule> {
+    const response = await apiFetch(apiPath(`/notification/rules/${id}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to update notification rule: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  export async function deleteNotificationRule(id: number): Promise<void> {
+    const response = await apiFetch(apiPath(`/notification/rules/${id}`), {
+      method: 'DELETE',
+    })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to delete notification rule: ${response.status}`)
+    }
+  }

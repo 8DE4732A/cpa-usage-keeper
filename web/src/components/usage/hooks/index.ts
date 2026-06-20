@@ -9,3 +9,6 @@ export type { SparklineData, SparklineBundle, UseSparklinesOptions, UseSparkline
 
 export { useChartData } from './useChartData';
 export type { UseChartDataOptions, UseChartDataReturn } from './useChartData';
+
+export { useNotificationSettings } from './useNotificationSettings';
+export type { UseNotificationSettingsOptions, UseNotificationSettingsReturn } from './useNotificationSettings';

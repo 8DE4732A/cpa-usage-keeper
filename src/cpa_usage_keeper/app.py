@@ -1,6 +1,7 @@
 """FastAPI application factory with lifespan management."""
 from __future__ import annotations
 import asyncio
+from datetime import timedelta
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
@@ -15,7 +16,8 @@ from .cpa.client import CPAClient
 from .cpa.redis_queue import RedisQueueClient
 from .service.sync import SyncService
 from .backup import BackupWriter
-from .poller.poller import PollerStatus, RedisDrain, MaintenanceRunner, BackupRunner
+from .database import get_session
+from .poller.poller import PollerStatus, RedisDrain, MaintenanceRunner, BackupRunner, NotificationRunner
 from .api.router import create_api_router
 
 @asynccontextmanager
@@ -46,6 +48,10 @@ async def lifespan(app: FastAPI):
         backup_runner = BackupRunner(writer, cfg.sqlite_path, cfg.backup_interval,
                                       cfg.backup_retention_days)
         background_tasks.append(asyncio.create_task(backup_runner.run()))
+
+    # Notification runner — evaluate rules every 5 minutes
+    notification_runner = NotificationRunner(get_session, timedelta(minutes=5))
+    background_tasks.append(asyncio.create_task(notification_runner.run()))
 
     yield
 

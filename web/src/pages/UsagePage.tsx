@@ -30,6 +30,7 @@ import {
   ApiDetailsCard,
   ModelStatsCard,
   PriceSettingsCard,
+  NotificationSettingsCard,
   CredentialStatsCard,
   CredentialTopChartCard,
   RequestEventsDetailsCard,
@@ -38,6 +39,7 @@ import {
   ServiceHealthCard,
   useUsageData,
   usePricingData,
+  useNotificationSettings,
   useSparklines,
   useChartData
 } from '@/components/usage';
@@ -91,7 +93,7 @@ const THEME_OPTIONS: ReadonlyArray<{ value: Theme; labelKey: string }> = [
   { value: 'dark', labelKey: 'usage_stats.theme_dark' },
   { value: 'auto', labelKey: 'usage_stats.theme_auto' }
 ];
-const USAGE_TAB_OPTIONS = ['overview', 'analysis', 'events', 'credentials', 'pricing'] as const;
+const USAGE_TAB_OPTIONS = ['overview', 'analysis', 'events', 'credentials', 'pricing', 'notifications'] as const;
 type UsageTab = (typeof USAGE_TAB_OPTIONS)[number];
 type Translate = (key: string) => string;
 const USAGE_TAB_LABEL_KEYS: Record<UsageTab, string> = {
@@ -100,6 +102,7 @@ const USAGE_TAB_LABEL_KEYS: Record<UsageTab, string> = {
   events: 'usage_stats.tab_events',
   credentials: 'usage_stats.tab_credentials',
   pricing: 'usage_stats.tab_pricing',
+  notifications: 'usage_stats.tab_notifications',
 };
 const DEFAULT_USAGE_TAB: UsageTab = 'overview';
 const USAGE_TAB_STORAGE_KEY = 'cli-proxy-usage-tab-v1';
@@ -420,9 +423,28 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     error: pricingError,
     loadPricing,
     setModelPrices,
+    openRouterPrices,
+    syncing: pricingSyncing,
+    syncOpenRouter,
   } = usePricingData({
     onAuthRequired,
     enabled: activeTab === 'pricing',
+  });
+  const {
+    channels: notificationChannels,
+    rules: notificationRules,
+    loading: notificationLoading,
+    refresh: refreshNotifications,
+    createChannel: onCreateChannel,
+    updateChannel: onUpdateChannel,
+    deleteChannel: onDeleteChannel,
+    testWebhook: onTestWebhook,
+    createRule: onCreateRule,
+    updateRule: onUpdateRule,
+    deleteRule: onDeleteRule,
+  } = useNotificationSettings({
+    onAuthRequired,
+    enabled: activeTab === 'notifications',
   });
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [statusError, setStatusError] = useState('');
@@ -875,8 +897,12 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       await loadPricing();
       return;
     }
+    if (activeTab === 'notifications') {
+      await refreshNotifications();
+      return;
+    }
     await loadUsage();
-  }, [activeTab, loadAnalysis, loadCredentials, loadEventFilterOptions, loadEvents, loadPricing, loadUsage]);
+  }, [activeTab, loadAnalysis, loadCredentials, loadEventFilterOptions, loadEvents, loadPricing, loadUsage, refreshNotifications]);
 
   const handleManualRefresh = useCallback(async () => {
     setManualRefreshLoading(true);
@@ -1006,7 +1032,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     const parsed = new Date(status.last_run_at);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }, [status?.last_run_at]);
-  const showRangeControls = activeTab !== 'pricing';
+  const showRangeControls = activeTab !== 'pricing' && activeTab !== 'notifications';
   const {
     requestsSparkline,
     tokensSparkline,
@@ -1388,6 +1414,24 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 modelPrices={modelPrices}
                 onPricesChange={setModelPrices}
                 loading={pricingLoading}
+                openRouterPrices={openRouterPrices}
+                onSyncOpenRouter={syncOpenRouter}
+                syncing={pricingSyncing}
+              />
+            )}
+
+            {activeTab === 'notifications' && (
+              <NotificationSettingsCard
+                channels={notificationChannels}
+                rules={notificationRules}
+                loading={notificationLoading}
+                onCreateChannel={onCreateChannel}
+                onUpdateChannel={onUpdateChannel}
+                onDeleteChannel={onDeleteChannel}
+                onTestWebhook={onTestWebhook}
+                onCreateRule={onCreateRule}
+                onUpdateRule={onUpdateRule}
+                onDeleteRule={onDeleteRule}
               />
             )}
           </div>

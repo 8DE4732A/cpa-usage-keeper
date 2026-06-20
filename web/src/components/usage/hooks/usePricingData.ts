@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, deletePricing, fetchPricing, fetchUsedModels, updatePricing } from '@/lib/api';
+import {
+  ApiError,
+  deletePricing,
+  fetchOpenRouterModels,
+  fetchPricing,
+  fetchUsedModels,
+  syncOpenRouterPrices,
+  updatePricing,
+} from '@/lib/api';
+import type { OpenRouterModelPrice } from '@/lib/types';
 import { useNotificationStore } from '@/stores';
-import { loadModelPrices, saveModelPrices, type ModelPrice } from '@/utils/usage';
+import { loadModelPrices, saveModelPrices, extractModelKey, type ModelPrice } from '@/utils/usage';
 
 export interface UsePricingDataOptions {
   onAuthRequired?: () => void;
@@ -17,6 +26,9 @@ export interface UsePricingDataReturn {
   lastRefreshedAt: Date | null;
   loadPricing: () => Promise<void>;
   setModelPrices: (prices: Record<string, ModelPrice>) => Promise<void>;
+  openRouterPrices: Record<string, OpenRouterModelPrice>;
+  syncing: boolean;
+  syncOpenRouter: () => Promise<void>;
 }
 
 const pricingToModelPrice = (entry: {
@@ -39,6 +51,8 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
+  const [openRouterPrices, setOpenRouterPrices] = useState<Record<string, OpenRouterModelPrice>>({});
+  const [syncing, setSyncing] = useState(false);
   const requestControllerRef = useRef<AbortController | null>(null);
 
   const loadPricing = useCallback(async () => {
@@ -50,9 +64,10 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
     setError('');
 
     try {
-      const [pricingResponse, usedModelsResponse] = await Promise.all([
+      const [pricingResponse, usedModelsResponse, orResponse] = await Promise.all([
         fetchPricing(controller.signal),
         fetchUsedModels(controller.signal),
+        fetchOpenRouterModels(controller.signal).catch(() => null),
       ]);
       if (requestControllerRef.current !== controller) {
         return;
@@ -63,6 +78,16 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
       saveModelPrices(prices);
       setModelPricesState(prices);
       setModelNames(usedModelsResponse.models);
+
+      // Build OpenRouter price index keyed by id
+      if (orResponse) {
+        const orIndex: Record<string, OpenRouterModelPrice> = {};
+        for (const m of orResponse.models) {
+          orIndex[m.id] = m;
+        }
+        setOpenRouterPrices(orIndex);
+      }
+
       setLastRefreshedAt(new Date());
     } catch (error) {
       if (controller.signal.aborted) {
@@ -132,6 +157,31 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
     }
   }, [modelPrices, onAuthRequired, showNotification, t]);
 
+  const syncOpenRouter = useCallback(async () => {
+    setSyncing(true);
+    try {
+      const result = await syncOpenRouterPrices();
+      showNotification(
+        `OpenRouter 同步完成: ${result.matched} 个模型匹配, ${result.created} 个新创建`,
+        'success'
+      );
+      // Reload pricing data after sync
+      await loadPricing();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onAuthRequired?.();
+        return;
+      }
+      const message = error instanceof Error ? error.message : '';
+      showNotification(
+        `OpenRouter 同步失败${message ? `: ${message}` : ''}`,
+        'error'
+      );
+    } finally {
+      setSyncing(false);
+    }
+  }, [showNotification, loadPricing, onAuthRequired]);
+
   return {
     modelNames,
     modelPrices,
@@ -140,5 +190,8 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
     lastRefreshedAt,
     loadPricing,
     setModelPrices,
+    openRouterPrices,
+    syncing,
+    syncOpenRouter,
   };
 }

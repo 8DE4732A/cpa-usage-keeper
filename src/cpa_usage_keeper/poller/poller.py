@@ -4,9 +4,11 @@ import asyncio
 import threading
 import time as _time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 from loguru import logger
+from sqlalchemy.orm import Session
 from ..service.sync import SyncService
+from ..repository.notification import evaluate_rules
 
 
 class PollerStatus:
@@ -203,6 +205,39 @@ class BackupRunner:
         elapsed = (datetime.now() - self._last_backup).total_seconds()
         remaining = self.interval.total_seconds() - elapsed
         return max(remaining, 0)
+
+    def stop(self):
+        self._running = False
+
+
+class NotificationRunner:
+    """Periodically evaluate notification rules and send alerts."""
+
+    def __init__(self, session_factory: Callable[[], Session], interval: timedelta):
+        self.session_factory = session_factory
+        self.interval = interval
+        self._running = False
+
+    async def run(self):
+        self._running = True
+        logger.info(f"Notification runner started, interval={self.interval}")
+        while self._running:
+            try:
+                db = self.session_factory()
+                try:
+                    triggered = evaluate_rules(db)
+                    if triggered:
+                        for t in triggered:
+                            status = "sent" if t.get("sent") else "failed"
+                            logger.info(
+                                f"Notification rule '{t['rule_name']}' triggered, "
+                                f"status={status}"
+                            )
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"Notification check failed: {e}")
+            await asyncio.sleep(self.interval.total_seconds())
 
     def stop(self):
         self._running = False

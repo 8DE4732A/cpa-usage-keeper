@@ -212,6 +212,10 @@ export interface PricingEntry {
   prompt_price_per_1m: number
   completion_price_per_1m: number
   cache_price_per_1m: number
+  openrouter_model_id?: string | null
+  openrouter_prompt_price_per_1m?: number | null
+  openrouter_completion_price_per_1m?: number | null
+  openrouter_cache_price_per_1m?: number | null
 }
 
 export interface UsedModelsResponse {
@@ -220,6 +224,57 @@ export interface UsedModelsResponse {
 
 export interface PricingResponse {
   pricing: PricingEntry[]
+}
+
+export interface OpenRouterModelPrice {
+  id: string
+  name: string
+  prompt_price_per_1m: number | null
+  completion_price_per_1m: number | null
+  cache_price_per_1m: number | null
+}
+
+export interface OpenRouterModelsResponse {
+  models: OpenRouterModelPrice[]
+}
+
+export interface SyncOpenRouterResponse {
+  matched: number
+  created: number
+  total_or_models: number
+  errors: string[]
+}
+
+export interface NotificationChannel {
+  id: number
+  name: string
+  channel_type: 'wecom_bot'
+  config: { webhook_url: string }
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface NotificationRule {
+  id: number
+  name: string
+  channel_id: number
+  rule_type: 'token_threshold' | 'connection_failure'
+  config: { threshold?: number; window_minutes: number }
+  enabled: boolean
+  cooldown_minutes: number
+  last_notified_at?: string | null
+  channel_name?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface NotificationChannelsResponse {
+  channels: NotificationChannel[]
+}
+
+export interface NotificationRulesResponse {
+  rules: NotificationRule[]
 }
 
 export type UsageTimeRange = 'all' | '4h' | '8h' | '12h' | '24h' | 'today' | '7d' | 'custom'
