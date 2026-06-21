@@ -345,6 +345,8 @@ def create_api_router(session_manager: Optional[SessionManager] = None,
     @router.get("/api/v1/pricing/openrouter-models")
     def get_openrouter_models(request: Request, db: Session = Depends(get_db)):
         _check_auth(request, session_manager, auth_enabled)
+        # NOTE: db session is still obtained for auth check compatibility,
+        # but fetch_openrouter_models() reads from in-memory cache, not DB.
         try:
             or_models = repo_pricing.fetch_openrouter_models()
         except Exception as exc:

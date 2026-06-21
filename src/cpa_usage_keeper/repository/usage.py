@@ -49,18 +49,18 @@ def list_usage_event_filter_options(db: Session, f: UsageQueryFilter):
 
 def _facet_values(db: Session, f: UsageQueryFilter, column: str) -> list[str]:
     col = getattr(UsageEvent, column)
-    q = _apply_list_filter(db.query(func.distinct(func.trim(col))), f)
-    q = q.filter(func.trim(col) != "").order_by(func.trim(col).asc())
+    q = _apply_list_filter(db.query(func.distinct(col)), f)
+    q = q.filter(col != "").order_by(col.asc())
     return [r[0] for r in q.all()]
 
 def list_credential_stats(db: Session, f: UsageQueryFilter):
     q = _apply_list_filter(db.query(
-        func.trim(UsageEvent.source).label("source"),
-        func.trim(UsageEvent.auth_index).label("auth_index"),
+        UsageEvent.source,
+        UsageEvent.auth_index,
         UsageEvent.failed,
         func.count().label("request_count"),
     ), f).group_by(
-        func.trim(UsageEvent.source), func.trim(UsageEvent.auth_index), UsageEvent.failed
+        UsageEvent.source, UsageEvent.auth_index, UsageEvent.failed
     ).order_by(func.count().desc())
     return [{"source": r.source, "auth_index": r.auth_index, "failed": r.failed,
              "request_count": r.request_count} for r in q.all()]
@@ -147,11 +147,11 @@ def _build_filters(f: UsageQueryFilter):
     if f.end_time:
         filters.append(UsageEvent.timestamp <= f.end_time)
     if f.model and f.model.strip():
-        filters.append(func.trim(UsageEvent.model) == f.model.strip())
+        filters.append(UsageEvent.model == f.model.strip())
     if f.source and f.source.strip():
-        filters.append(func.trim(UsageEvent.source) == f.source.strip())
+        filters.append(UsageEvent.source == f.source.strip())
     if f.auth_index and f.auth_index.strip():
-        filters.append(func.trim(UsageEvent.auth_index) == f.auth_index.strip())
+        filters.append(UsageEvent.auth_index == f.auth_index.strip())
     if f.result == "success":
         filters.append(UsageEvent.failed == False)
     elif f.result == "failed":

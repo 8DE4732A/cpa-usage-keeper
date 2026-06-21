@@ -181,12 +181,17 @@ def delete_rule(db: Session, rule_id: int) -> bool:
 
 
 def evaluate_rules(db: Session) -> list[dict[str, Any]]:
-    """Evaluate all enabled rules and send notifications for triggered ones.
+    """Evaluate all enabled rules and schedule notifications for triggered ones.
 
-    Returns a list of dicts describing triggered evaluations.
+    IMPORTANT: This function only evaluates rules against the database and queues
+    up pending notifications. The actual webhook sending is done by the caller
+    (NotificationRunner) so the DB session is not held during HTTP calls —
+    with pool_size=1 a 15-second webhook timeout would block all other requests.
+
+    Returns a list of dicts describing triggered evaluations (without sending).
     """
     now = datetime.now(timezone.utc)
-    triggered: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
 
     rules = (
         db.query(NotificationRule, NotificationChannel)
@@ -220,35 +225,64 @@ def evaluate_rules(db: Session) -> list[dict[str, Any]]:
         if not triggered_flag:
             continue
 
-        # Send notification
+        pending.append({
+            "rule_id": rule.id,
+            "rule_name": rule.name,
+            "channel_name": channel.name,
+            "channel_config": channel.config,
+            "message": message,
+            "now": now,
+            "cooldown_minutes": rule.cooldown_minutes,
+        })
+
+    return pending
+
+
+def send_pending_notifications(
+    db: Session, pending: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Deliver pending notifications outside the evaluation transaction.
+
+    Sends each webhook, then updates last_notified_at on success.
+    Caller owns the DB session and should close it afterward.
+    """
+    results: list[dict[str, Any]] = []
+    for p in pending:
         try:
-            _send_wecom(channel.config, rule.name, message)
+            _send_wecom(p["channel_config"], p["rule_name"], p["message"])
         except Exception as exc:
             logger.error(
-                f"Failed to send notification for rule '{rule.name}' "
-                f"via channel '{channel.name}': {exc}"
+                f"Failed to send notification for rule '{p['rule_name']}' "
+                f"via channel '{p['channel_name']}': {exc}"
             )
-            triggered.append({
-                "rule_id": rule.id,
-                "rule_name": rule.name,
-                "channel_name": channel.name,
+            results.append({
+                "rule_id": p["rule_id"],
+                "rule_name": p["rule_name"],
+                "channel_name": p["channel_name"],
                 "sent": False,
                 "error": str(exc),
             })
             continue
 
-        # Update last_notified_at
-        rule.last_notified_at = now.replace(tzinfo=None)
-        db.commit()
+        # Update last_notified_at with a single UPDATE query (no N+1 SELECT)
+        db.query(NotificationRule).filter(
+            NotificationRule.id == p["rule_id"]
+        ).update(
+            {"last_notified_at": p["now"].replace(tzinfo=None)}
+        )
 
-        triggered.append({
-            "rule_id": rule.id,
-            "rule_name": rule.name,
-            "channel_name": channel.name,
+        results.append({
+            "rule_id": p["rule_id"],
+            "rule_name": p["rule_name"],
+            "channel_name": p["channel_name"],
             "sent": True,
         })
 
-    return triggered
+    # Single batch commit — avoids N fsyncs on SQLite WAL.
+    if results:
+        db.commit()
+
+    return results
 
 
 def test_webhook(db: Session, channel_id: int) -> bool:

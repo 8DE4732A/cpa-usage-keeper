@@ -17,7 +17,7 @@ from .cpa.redis_queue import RedisQueueClient
 from .service.sync import SyncService
 from .backup import BackupWriter
 from .database import get_session
-from .poller.poller import PollerStatus, RedisDrain, MaintenanceRunner, BackupRunner, NotificationRunner
+from .poller.poller import PollerStatus, RedisDrain, MaintenanceRunner, BackupRunner, NotificationRunner, OpenRouterSyncRunner
 from .api.router import create_api_router
 
 @asynccontextmanager
@@ -52,6 +52,10 @@ async def lifespan(app: FastAPI):
     # Notification runner — evaluate rules every 5 minutes
     notification_runner = NotificationRunner(get_session, timedelta(minutes=5))
     background_tasks.append(asyncio.create_task(notification_runner.run()))
+
+    # OpenRouter auto-sync runner — fill missing OR prices every 30 minutes
+    or_sync_runner = OpenRouterSyncRunner(get_session, timedelta(minutes=30))
+    background_tasks.append(asyncio.create_task(or_sync_runner.run()))
 
     yield
 

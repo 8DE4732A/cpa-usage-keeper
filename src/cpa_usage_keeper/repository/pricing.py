@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import httpx
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..models import ModelPriceSetting, UsageEvent
@@ -61,6 +61,17 @@ def or_price(px: dict, key: str) -> float | None:
     if val < 0:
         return None
     return val * 1_000_000
+
+
+def _extract_or_pricing(match: dict) -> tuple[str, float | None, float | None, float | None]:
+    """Extract OpenRouter model id and per-1M prices from a matched model dict."""
+    pricing = match.get("pricing", {})
+    return (
+        (match.get("id") or "").strip(),
+        or_price(pricing, "prompt"),
+        or_price(pricing, "completion"),
+        or_price(pricing, "input_cache_read"),
+    )
 
 
 def build_openrouter_index(or_models: list[dict]) -> dict[str, dict]:
@@ -136,11 +147,15 @@ def sync_openrouter_prices(db: Session) -> dict:
 
     # Used models from usage events (not yet in price settings)
     used_rows = (
-        db.query(func.distinct(func.trim(UsageEvent.model)))
-        .filter(func.trim(UsageEvent.model) != "")
+        db.query(func.distinct(UsageEvent.model))
+        .filter(UsageEvent.model != "")
         .all()
     )
-    used: set[str] = {m[0] for m in used_rows}
+    used: set[str] = set()
+    for (m,) in used_rows:
+        clean = m.strip()
+        if clean:
+            used.add(clean)
 
     all_models = existing | used
 
@@ -151,11 +166,7 @@ def sync_openrouter_prices(db: Session) -> dict:
         if match is None:
             continue
 
-        pricing = match.get("pricing", {})
-        or_id = (match.get("id") or "").strip()
-        or_prompt = or_price(pricing, "prompt")
-        or_completion = or_price(pricing, "completion")
-        or_cache = or_price(pricing, "input_cache_read")
+        or_id, or_prompt, or_completion, or_cache = _extract_or_pricing(match)
 
         existing_row: ModelPriceSetting | None = existing_rows.get(cpa_model)
 
@@ -184,9 +195,26 @@ def sync_openrouter_prices(db: Session) -> dict:
     return result
 
 def list_used_models(db: Session) -> list[str]:
-    rows = db.query(func.distinct(func.trim(UsageEvent.model))).filter(
-        func.trim(UsageEvent.model) != "").order_by(func.trim(UsageEvent.model).asc()).all()
-    return [m for (m,) in rows]
+    """List distinct model names from usage events.
+
+    Strips whitespace in Python after fetching so the query can use the model
+    column index — SQLite's func.trim() inside the query prevents index usage
+    and causes a full table scan on every invocation.
+    """
+    rows = (
+        db.query(func.distinct(UsageEvent.model))
+        .filter(UsageEvent.model != "")
+        .order_by(UsageEvent.model.asc())
+        .all()
+    )
+    seen: set[str] = set()
+    result: list[str] = []
+    for (m,) in rows:
+        clean = m.strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            result.append(clean)
+    return result
 
 def list_pricing(db: Session) -> list[ModelPriceSetting]:
     return db.query(ModelPriceSetting).order_by(ModelPriceSetting.model.asc()).all()
@@ -224,8 +252,102 @@ def upsert_pricing(db: Session, model: str, prompt: float, completion: float, ca
     return setting
 
 def delete_pricing(db: Session, model: str) -> None:
+    """Reset a model's custom prices to 0 (keep OpenRouter prices intact).
+
+    The row is never deleted — OpenRouter-reference prices must always persist.
+    If the model has no custom price set (all zeros), this is a no-op.
+    """
     model = model.strip()
     if not model:
         raise ValueError("model is required")
-    db.query(ModelPriceSetting).filter(ModelPriceSetting.model == model).delete()
+    existing = db.query(ModelPriceSetting).filter(ModelPriceSetting.model == model).first()
+    if existing is None:
+        return
+    existing.prompt_price_per_1m = 0.0
+    existing.completion_price_per_1m = 0.0
+    existing.cache_price_per_1m = 0.0
     db.commit()
+
+
+def auto_sync_openrouter_prices(db: Session) -> dict:
+    """Fill missing OpenRouter prices without touching existing ones.
+
+    Lightweight periodic check (run every 30 min) — only queries the API
+    when there's actually something stale to fix.
+
+    Returns {"updated": int, "created": int, "errors": list[str]}.
+    """
+    result: dict = {"updated": 0, "created": 0, "errors": []}
+
+    # Also check for usage models without a pricing row.
+    all_existing = {
+        row[0].strip()
+        for row in db.query(ModelPriceSetting.model).all()
+    }
+    used = list_used_models(db)
+    uncached = [m for m in used if m not in all_existing]
+
+    # Query stale rows full, reusing the same fetch as the cheap guard
+    # (single round-trip instead of two).
+    stale_rows = db.query(ModelPriceSetting).filter(
+        or_(
+            ModelPriceSetting.openrouter_prompt_price_per_1m.is_(None),
+            ModelPriceSetting.openrouter_completion_price_per_1m.is_(None),
+            ModelPriceSetting.openrouter_cache_price_per_1m.is_(None),
+        )
+    ).all()
+
+    if not stale_rows and not uncached:
+        return result
+
+    try:
+        invalidate_or_cache()
+        or_models = fetch_openrouter_models()
+    except Exception as exc:
+        result["errors"].append(str(exc))
+        return result
+
+    or_index = build_openrouter_index(or_models)
+
+    # ── 1) Existing rows with missing OR prices ──
+    for row in stale_rows:
+            match = match_openrouter_model(row.model.strip(), or_index)
+            if match is None:
+                continue
+            or_id, or_prompt, or_completion, or_cache = _extract_or_pricing(match)
+            if (
+                row.openrouter_model_id == or_id
+                and row.openrouter_prompt_price_per_1m == or_prompt
+                and row.openrouter_completion_price_per_1m == or_completion
+                and row.openrouter_cache_price_per_1m == or_cache
+            ):
+                continue
+            row.openrouter_model_id = or_id
+            row.openrouter_prompt_price_per_1m = or_prompt
+            row.openrouter_completion_price_per_1m = or_completion
+            row.openrouter_cache_price_per_1m = or_cache
+            result["updated"] += 1
+
+    # ── 2) Usage models that have no pricing row yet ──
+    for clean in uncached:
+        match = match_openrouter_model(clean, or_index)
+        if match is None:
+            continue
+        or_id, or_prompt, or_completion, or_cache = _extract_or_pricing(match)
+        setting = ModelPriceSetting(
+            model=clean,
+            prompt_price_per_1m=0.0,
+            completion_price_per_1m=0.0,
+            cache_price_per_1m=0.0,
+            openrouter_model_id=or_id,
+            openrouter_prompt_price_per_1m=or_prompt,
+            openrouter_completion_price_per_1m=or_completion,
+            openrouter_cache_price_per_1m=or_cache,
+        )
+        db.add(setting)
+        result["created"] += 1
+
+    if result["updated"] > 0 or result["created"] > 0:
+        db.commit()
+
+    return result

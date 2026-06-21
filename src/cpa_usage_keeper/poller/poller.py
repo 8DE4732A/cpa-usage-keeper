@@ -1,4 +1,4 @@
-"""Background pollers for redis drain."""
+"""Background pollers for redis drain, notifications, and OpenRouter sync."""
 from __future__ import annotations
 import asyncio
 import threading
@@ -8,7 +8,8 @@ from typing import Callable, Optional
 from loguru import logger
 from sqlalchemy.orm import Session
 from ..service.sync import SyncService
-from ..repository.notification import evaluate_rules
+from ..repository.notification import evaluate_rules, send_pending_notifications
+from ..repository.pricing import auto_sync_openrouter_prices
 
 
 class PollerStatus:
@@ -222,21 +223,71 @@ class NotificationRunner:
         self._running = True
         logger.info(f"Notification runner started, interval={self.interval}")
         while self._running:
+            pending = []
             try:
                 db = self.session_factory()
                 try:
-                    triggered = evaluate_rules(db)
-                    if triggered:
+                    pending = evaluate_rules(db)
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"Notification rule evaluation failed: {e}")
+
+            # Send webhooks outside the DB session so a slow HTTP call doesn't
+            # block other requests on the single SQLite connection (pool_size=1).
+            if pending:
+                try:
+                    db = self.session_factory()
+                    try:
+                        triggered = send_pending_notifications(db, pending)
                         for t in triggered:
                             status = "sent" if t.get("sent") else "failed"
                             logger.info(
                                 f"Notification rule '{t['rule_name']}' triggered, "
                                 f"status={status}"
                             )
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.error(f"Notification delivery failed: {e}")
+
+            await asyncio.sleep(self.interval.total_seconds())
+
+    def stop(self):
+        self._running = False
+
+
+class OpenRouterSyncRunner:
+    """Periodically auto-sync OpenRouter prices for rows that are missing them.
+
+    Runs every N minutes and fills in openrouter_* columns for any
+    ModelPriceSetting row where they are NULL (e.g. because the model is new
+    or the initial sync failed).
+    """
+
+    def __init__(self, session_factory: Callable[[], Session], interval: timedelta):
+        self.session_factory = session_factory
+        self.interval = interval
+        self._running = False
+
+    async def run(self):
+        self._running = True
+        logger.info(f"OpenRouter auto-sync runner started, interval={self.interval}")
+        while self._running:
+            try:
+                db = self.session_factory()
+                try:
+                    result = auto_sync_openrouter_prices(db)
+                    if result["updated"] > 0:
+                        logger.info(f"OpenRouter auto-sync: {result['updated']} models updated")
+                    if result["errors"]:
+                        logger.warning(
+                            f"OpenRouter auto-sync errors: {'; '.join(result['errors'])}"
+                        )
                 finally:
                     db.close()
             except Exception as e:
-                logger.error(f"Notification check failed: {e}")
+                logger.error(f"OpenRouter auto-sync failed: {e}")
             await asyncio.sleep(self.interval.total_seconds())
 
     def stop(self):

@@ -149,9 +149,9 @@ export function PriceSettingsCard({
     setCachePrice('');
   };
 
-  const handleDeletePrice = (model: string) => {
-    const newPrices = { ...modelPrices };
-    delete newPrices[model];
+  /** Reset custom prices to 0 so the effective price falls back to OR. */
+  const handleResetPrice = (model: string) => {
+    const newPrices = { ...modelPrices, [model]: { prompt: 0, completion: 0, cache: 0 } };
     onPricesChange(newPrices);
   };
 
@@ -345,9 +345,11 @@ export function PriceSettingsCard({
                           <Button variant="secondary" size="sm" onClick={() => handleOpenEdit(model)}>
                             {t('common.edit')}
                           </Button>
-                          <Button variant="danger" size="sm" onClick={() => handleDeletePrice(model)}>
-                            {t('common.delete')}
-                          </Button>
+                          {isUserSet && (
+                            <Button variant="danger" size="sm" onClick={() => handleResetPrice(model)}>
+                              {t('usage_stats.reset_price')}
+                            </Button>
+                          )}
                         </div>
                       </div>
                     );

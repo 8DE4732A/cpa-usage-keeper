@@ -64,10 +64,10 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
     setError('');
 
     try {
-      const [pricingResponse, usedModelsResponse, orResponse] = await Promise.all([
+      // Fetch DB-dependent data first — these compete for pool_size=1.
+      const [pricingResponse, usedModelsResponse] = await Promise.all([
         fetchPricing(controller.signal),
         fetchUsedModels(controller.signal),
-        fetchOpenRouterModels(controller.signal).catch(() => null),
       ]);
       if (requestControllerRef.current !== controller) {
         return;
@@ -79,14 +79,22 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
       setModelPricesState(prices);
       setModelNames(usedModelsResponse.models);
 
-      // Build OpenRouter price index keyed by id
-      if (orResponse) {
-        const orIndex: Record<string, OpenRouterModelPrice> = {};
-        for (const m of orResponse.models) {
-          orIndex[m.id] = m;
-        }
-        setOpenRouterPrices(orIndex);
-      }
+      // Fetch OpenRouter models lazily — they are read-only cache and
+      // only used for display hints (badge / reference price).  By fetching
+      // them *after* the DB calls we avoid competing for pool_size=1 when
+      // the real DB work hasn't finished yet.
+      fetchOpenRouterModels(controller.signal)
+        .then((orResponse) => {
+          if (requestControllerRef.current !== controller) return;
+          const orIndex: Record<string, OpenRouterModelPrice> = {};
+          for (const m of orResponse.models) {
+            orIndex[m.id] = m;
+          }
+          setOpenRouterPrices(orIndex);
+        })
+        .catch(() => {
+          // OpenRouter is optional — silently ignore failures.
+        });
 
       setLastRefreshedAt(new Date());
     } catch (error) {
@@ -127,19 +135,28 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
     saveModelPrices(prices);
 
     try {
-      const previousModels = new Set(Object.keys(previousPrices));
-      const nextModels = new Set(Object.keys(prices));
+      // Only ask the backend for models that *actually changed* (new, or different values).
+      const changedModels = Object.entries(prices).filter(([model, pricing]) => {
+        const prev = previousPrices[model];
+        return !prev
+          || prev.prompt !== pricing.prompt
+          || prev.completion !== pricing.completion
+          || prev.cache !== pricing.cache;
+      });
+
+      // Models that existed before but are no longer in the set → delete them.
+      const deletedModels = Object.keys(previousPrices)
+        .filter((model) => !(model in prices));
+
       await Promise.all([
-        ...Object.entries(prices).map(([model, pricing]) =>
+        ...changedModels.map(([model, pricing]) =>
           updatePricing(model, {
             prompt_price_per_1m: pricing.prompt,
             completion_price_per_1m: pricing.completion,
             cache_price_per_1m: pricing.cache,
           })
         ),
-        ...Array.from(previousModels)
-          .filter((model) => !nextModels.has(model))
-          .map((model) => deletePricing(model)),
+        ...deletedModels.map((model) => deletePricing(model)),
       ]);
       setLastRefreshedAt(new Date());
     } catch (error) {
