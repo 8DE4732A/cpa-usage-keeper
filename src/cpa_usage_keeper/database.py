@@ -23,6 +23,10 @@ _MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("openrouter_prompt_price_per_1m", "FLOAT"),
         ("openrouter_completion_price_per_1m", "FLOAT"),
         ("openrouter_cache_price_per_1m", "FLOAT"),
+        ("deepinfra_model_id", "VARCHAR"),
+        ("deepinfra_prompt_price_per_1m", "FLOAT"),
+        ("deepinfra_completion_price_per_1m", "FLOAT"),
+        ("deepinfra_cache_price_per_1m", "FLOAT"),
     ],
 }
 

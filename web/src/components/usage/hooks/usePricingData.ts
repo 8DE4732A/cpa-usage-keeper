@@ -11,7 +11,7 @@ import {
 } from '@/lib/api';
 import type { OpenRouterModelPrice } from '@/lib/types';
 import { useNotificationStore } from '@/stores';
-import { loadModelPrices, saveModelPrices, extractModelKey, type ModelPrice } from '@/utils/usage';
+import { loadModelPrices, saveModelPrices, buildModelPrice, extractModelKey, type ModelPrice } from '@/utils/usage';
 
 export interface UsePricingDataOptions {
   onAuthRequired?: () => void;
@@ -36,11 +36,20 @@ const pricingToModelPrice = (entry: {
   prompt_price_per_1m: number;
   completion_price_per_1m: number;
   cache_price_per_1m: number;
-}): ModelPrice => ({
-  prompt: entry.prompt_price_per_1m,
-  completion: entry.completion_price_per_1m,
-  cache: entry.cache_price_per_1m,
-});
+  has_custom_price?: boolean;
+  effective_prompt_price_per_1m?: number | null;
+  effective_completion_price_per_1m?: number | null;
+  effective_cache_price_per_1m?: number | null;
+}): ModelPrice => {
+  const hasCustomPrice = entry.has_custom_price ?? false;
+  const eff = {
+    prompt: entry.effective_prompt_price_per_1m ?? entry.prompt_price_per_1m,
+    completion: entry.effective_completion_price_per_1m ?? entry.completion_price_per_1m,
+    cache: entry.effective_cache_price_per_1m ?? entry.cache_price_per_1m,
+  };
+  const base = buildModelPrice(entry.prompt_price_per_1m, entry.completion_price_per_1m, entry.cache_price_per_1m, eff);
+  return { ...base, hasCustomPrice };
+};
 
 export function usePricingData(options: UsePricingDataOptions = {}): UsePricingDataReturn {
   const { onAuthRequired, enabled = true } = options;
@@ -158,7 +167,8 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
         ),
         ...deletedModels.map((model) => deletePricing(model)),
       ]);
-      setLastRefreshedAt(new Date());
+      // Re-fetch from backend so effective_* fields are authoritative after save/reset.
+      await loadPricing();
     } catch (error) {
       setModelPricesState(previousPrices);
       saveModelPrices(previousPrices);
@@ -172,14 +182,17 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
         'error'
       );
     }
-  }, [modelPrices, onAuthRequired, showNotification, t]);
+  }, [modelPrices, onAuthRequired, showNotification, t, loadPricing]);
 
   const syncOpenRouter = useCallback(async () => {
     setSyncing(true);
     try {
       const result = await syncOpenRouterPrices();
+      const diMatched = result.deepinfra_matched ?? 0;
+      const orMatched = result.openrouter_matched ?? 0;
+      const warnings = result.errors?.length ? ` (警告: ${result.errors.join('; ')})` : '';
       showNotification(
-        `OpenRouter 同步完成: ${result.matched} 个模型匹配, ${result.created} 个新创建`,
+        `价格同步完成: DeepInfra ${diMatched} 个, OpenRouter ${orMatched} 个, 新增 ${result.created} 个${warnings}`,
         'success'
       );
       // Reload pricing data after sync

@@ -23,11 +23,83 @@ export interface ModelPrice {
   prompt: number;
   completion: number;
   cache: number;
+  /** Effective prices as computed by the backend (fallback chain: custom → OR). */
+  effectivePrompt: number;
+  effectiveCompletion: number;
+  effectiveCache: number;
+  /** True when the user has explicitly saved a non-zero custom price. */
+  hasCustomPrice: boolean;
 }
 
-/** Extract the last /-segment of a model name, stripping any :suffix. */
+/** Build a ModelPrice from explicit price values.
+ *
+ * When the user saves custom prices, effective = custom.
+ * When effectiveOverrides are supplied (e.g. OR fallback on reset), those win.
+ */
+export function buildModelPrice(
+  prompt: number,
+  completion: number,
+  cache: number,
+  effectiveOverrides?: { prompt: number; completion: number; cache: number },
+): ModelPrice {
+  const hasCustomPrice = prompt !== 0 || completion !== 0 || cache !== 0;
+  const eff = effectiveOverrides ?? { prompt, completion, cache };
+  return { prompt, completion, cache, hasCustomPrice, effectivePrompt: eff.prompt, effectiveCompletion: eff.completion, effectiveCache: eff.cache };
+}
+
+/** Extract the last /-segment of a model name, stripping any :suffix, lowercased. */
 export function extractModelKey(fullName: string): string {
-  return fullName.split(':')[0].split('/').pop() || fullName;
+  return fullName.split(':')[0].split('/').pop()?.toLowerCase() || fullName.toLowerCase();
+}
+
+const ROUTING_PREFIXES = ['openrouter/'] as const;
+
+export function stripRoutingPrefix(modelName: string): string {
+  for (const prefix of ROUTING_PREFIXES) {
+    if (modelName.startsWith(prefix)) return modelName.slice(prefix.length);
+  }
+  return modelName;
+}
+
+import type { OpenRouterModelPrice } from '@/lib/types';
+
+/**
+ * Build an O(1) lookup index from an OpenRouter model record map.
+ *
+ * Slots written per model:
+ *   [m.id]                        exact match
+ *   [__key__<last-seg>]           base-model key (no :suffix wins over :suffix)
+ *   [__variant__<last-seg>:sfx]   variant key for O(1) variant lookup
+ */
+export function buildORIndex(orPrices: Record<string, OpenRouterModelPrice>): Record<string, OpenRouterModelPrice> {
+  const idx: Record<string, OpenRouterModelPrice> = {};
+  for (const m of Object.values(orPrices)) {
+    idx[m.id] = m;
+    const lastSeg = m.id.split('/').pop() ?? '';
+    const colonIdx = lastSeg.indexOf(':');
+    const keySlot = `__key__${extractModelKey(m.id)}`;
+    const isBase = colonIdx === -1;
+    if (!(keySlot in idx) || isBase) idx[keySlot] = m;
+    if (!isBase) idx[`__variant__${extractModelKey(m.id)}:${lastSeg.slice(colonIdx + 1)}`] = m;
+  }
+  return idx;
+}
+
+/** O(1) lookup: exact id → strip routing prefix → variant slot → base-key slot. */
+export function findMatchingORPrice(
+  modelName: string,
+  idx: Record<string, OpenRouterModelPrice>,
+): OpenRouterModelPrice | undefined {
+  if (idx[modelName]) return idx[modelName];
+  const stripped = stripRoutingPrefix(modelName);
+  if (stripped !== modelName && idx[stripped]) return idx[stripped];
+  const key = extractModelKey(modelName);
+  const queryVariant = modelName.includes(':') ? modelName.split(':').pop()! : '';
+  if (queryVariant) {
+    const v = idx[`__variant__${key}:${queryVariant}`];
+    if (v) return v;
+  }
+  return idx[`__key__${key}`];
 }
 
 export interface ChartDataset {
@@ -420,8 +492,19 @@ export function loadModelPrices(): Record<string, ModelPrice> {
   try {
     const raw = window.localStorage.getItem('cpa-model-prices');
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, ModelPrice>;
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    const parsed = JSON.parse(raw) as Record<string, Partial<ModelPrice>>;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const result: Record<string, ModelPrice> = {};
+    for (const [model, p] of Object.entries(parsed)) {
+      const prompt = p.prompt ?? 0;
+      const completion = p.completion ?? 0;
+      const cache = p.cache ?? 0;
+      const eff = { prompt: p.effectivePrompt ?? prompt, completion: p.effectiveCompletion ?? completion, cache: p.effectiveCache ?? cache };
+      const base = buildModelPrice(prompt, completion, cache, eff);
+      // Honour backend-provided hasCustomPrice when available (older data: infer from prices)
+      result[model] = { ...base, hasCustomPrice: p.hasCustomPrice ?? base.hasCustomPrice };
+    }
+    return result;
   } catch {
     return {};
   }
@@ -444,10 +527,14 @@ export function calculateCost(detail: UsageDetailRecord, modelPrices: Record<str
   );
   const promptTokens = Math.max(inputTokens - cachedTokens, 0);
 
+  const ep = pricing.effectivePrompt;
+  const ec = pricing.effectiveCompletion;
+  const ecc = pricing.effectiveCache;
+
   return (
-    (promptTokens / 1_000_000) * pricing.prompt +
-    (completionTokens / 1_000_000) * pricing.completion +
-    (cachedTokens / 1_000_000) * pricing.cache
+    (promptTokens / 1_000_000) * ep +
+    (completionTokens / 1_000_000) * ec +
+    (cachedTokens / 1_000_000) * ecc
   );
 }
 

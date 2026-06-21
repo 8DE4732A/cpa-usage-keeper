@@ -7,7 +7,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Select, type SelectOption } from '@/components/ui/Select';
 import { IconCheck, IconRefreshCw } from '@/components/ui/icons';
 import type { OpenRouterModelPrice } from '@/lib/types';
-import { extractModelKey, type ModelPrice } from '@/utils/usage';
+import { extractModelKey, buildModelPrice, buildORIndex, findMatchingORPrice, type ModelPrice } from '@/utils/usage';
 import styles from '@/pages/UsagePage.module.scss';
 
 const formatDisplayName = (value: string): string => {
@@ -15,27 +15,6 @@ const formatDisplayName = (value: string): string => {
   if (!normalized) return '-';
   return normalized;
 };
-
-/**
- * Build a key-indexed lookup for O(1) OR price matching.
- * Keys are both the full id and the last /-segment.
- */
-function buildORIndex(orPrices: Record<string, OpenRouterModelPrice>): Record<string, OpenRouterModelPrice> {
-  const idx: Record<string, OpenRouterModelPrice> = {};
-  for (const m of Object.values(orPrices)) {
-    idx[m.id] = m;
-    idx[`__key__${extractModelKey(m.id)}`] = m;
-  }
-  return idx;
-}
-
-/** O(1) lookup: try exact id, then key prefix. */
-function findMatchingORPrice(
-  modelName: string,
-  idx: Record<string, OpenRouterModelPrice>,
-): OpenRouterModelPrice | undefined {
-  return idx[modelName] ?? idx[`__key__${extractModelKey(modelName)}`];
-}
 
 export interface PriceSettingsCardProps {
   modelNames: string[];
@@ -141,8 +120,7 @@ export function PriceSettingsCard({
     const completion = parsePriceValue(completionPrice);
     const cache = cachePrice.trim() === '' ? prompt : parsePriceValue(cachePrice);
     if (prompt === null || completion === null || cache === null) return;
-    const newPrices = { ...modelPrices, [selectedModel]: { prompt, completion, cache } };
-    onPricesChange(newPrices);
+    onPricesChange({ ...modelPrices, [selectedModel]: buildModelPrice(prompt, completion, cache) });
     setSelectedModel('');
     setPromptPrice('');
     setCompletionPrice('');
@@ -151,14 +129,15 @@ export function PriceSettingsCard({
 
   /** Reset custom prices to 0 so the effective price falls back to OR. */
   const handleResetPrice = (model: string) => {
-    const newPrices = { ...modelPrices, [model]: { prompt: 0, completion: 0, cache: 0 } };
-    onPricesChange(newPrices);
+    const orMatch = findMatchingORPrice(model, orIndex);
+    const eff = { prompt: orMatch?.prompt_price_per_1m ?? 0, completion: orMatch?.completion_price_per_1m ?? 0, cache: orMatch?.cache_price_per_1m ?? 0 };
+    onPricesChange({ ...modelPrices, [model]: buildModelPrice(0, 0, 0, eff) });
   };
 
   const handleOpenEdit = (model: string) => {
     const price = modelPrices[model];
     const orMatch = findMatchingORPrice(model, orIndex);
-    const hasUserPrice = price && price.prompt !== 0;
+    const hasUserPrice = price?.hasCustomPrice;
     setEditModel(model);
     setEditPrompt((hasUserPrice ? price.prompt : (orMatch?.prompt_price_per_1m ?? 0)).toString());
     setEditCompletion((hasUserPrice ? price.completion : (orMatch?.completion_price_per_1m ?? 0)).toString());
@@ -171,8 +150,7 @@ export function PriceSettingsCard({
     const completion = parsePriceValue(editCompletion);
     const cache = editCache.trim() === '' ? prompt : parsePriceValue(editCache);
     if (prompt === null || completion === null || cache === null) return;
-    const newPrices = { ...modelPrices, [editModel]: { prompt, completion, cache } };
-    onPricesChange(newPrices);
+    onPricesChange({ ...modelPrices, [editModel]: buildModelPrice(prompt, completion, cache) });
     setEditModel(null);
   };
 
@@ -180,7 +158,7 @@ export function PriceSettingsCard({
   const handleModelSelect = (value: string) => {
     setSelectedModel(value);
     const price = modelPrices[value];
-    if (price && price.prompt !== 0) {
+    if (price?.hasCustomPrice) {
       setPromptPrice(price.prompt.toString());
       setCompletionPrice(price.completion.toString());
       setCachePrice(price.cache.toString());
@@ -302,7 +280,7 @@ export function PriceSettingsCard({
                 <div className={styles.pricesGrid}>
                   {Object.entries(modelPrices).map(([model, price]) => {
                     const orMatch = findMatchingORPrice(model, orIndex);
-                    const isUserSet = price.prompt !== 0;
+                    const isUserSet = price.hasCustomPrice;
                     return (
                       <div key={model} className={styles.priceItem}>
                         <div className={styles.priceInfo}>
@@ -321,13 +299,13 @@ export function PriceSettingsCard({
                           </span>
                           <div className={styles.priceMeta}>
                             <span>
-                              {t('usage_stats.model_price_prompt')}: ${(isUserSet ? price.prompt : (orMatch?.prompt_price_per_1m ?? 0)).toFixed(4)}/1M
+                              {t('usage_stats.model_price_prompt')}: ${price.effectivePrompt.toFixed(4)}/1M
                             </span>
                             <span>
-                              {t('usage_stats.model_price_completion')}: ${(isUserSet ? price.completion : (orMatch?.completion_price_per_1m ?? 0)).toFixed(4)}/1M
+                              {t('usage_stats.model_price_completion')}: ${price.effectiveCompletion.toFixed(4)}/1M
                             </span>
                             <span>
-                              {t('usage_stats.model_price_cache')}: ${(isUserSet ? price.cache : (orMatch?.cache_price_per_1m ?? 0)).toFixed(4)}/1M
+                              {t('usage_stats.model_price_cache')}: ${price.effectiveCache.toFixed(4)}/1M
                             </span>
                           </div>
                           {/* Show OpenRouter reference price when user overrode */}

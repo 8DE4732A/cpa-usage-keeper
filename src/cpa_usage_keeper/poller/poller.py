@@ -278,11 +278,14 @@ class OpenRouterSyncRunner:
                 db = self.session_factory()
                 try:
                     result = auto_sync_openrouter_prices(db)
-                    if result["updated"] > 0:
-                        logger.info(f"OpenRouter auto-sync: {result['updated']} models updated")
-                    if result["errors"]:
+                    di = result.get("deepinfra_matched", 0)
+                    or_ = result.get("openrouter_matched", 0)
+                    created = result.get("created", 0)
+                    if di > 0 or or_ > 0 or created > 0:
+                        logger.info(f"Price auto-sync: DeepInfra={di} OR={or_} created={created}")
+                    if result.get("errors"):
                         logger.warning(
-                            f"OpenRouter auto-sync errors: {'; '.join(result['errors'])}"
+                            f"Price auto-sync errors: {'; '.join(result['errors'])}"
                         )
                 finally:
                     db.close()

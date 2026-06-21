@@ -310,16 +310,28 @@ def create_api_router(session_manager: Optional[SessionManager] = None,
     def list_pricing(request: Request, db: Session = Depends(get_db)):
         _check_auth(request, session_manager, auth_enabled)
         settings = repo_pricing.list_pricing(db)
-        return {"pricing": [{
-            "model": s.model,
-            "prompt_price_per_1m": s.prompt_price_per_1m,
-            "completion_price_per_1m": s.completion_price_per_1m,
-            "cache_price_per_1m": s.cache_price_per_1m,
-            "openrouter_model_id": s.openrouter_model_id,
-            "openrouter_prompt_price_per_1m": s.openrouter_prompt_price_per_1m,
-            "openrouter_completion_price_per_1m": s.openrouter_completion_price_per_1m,
-            "openrouter_cache_price_per_1m": s.openrouter_cache_price_per_1m,
-        } for s in settings]}
+        rows = []
+        for s in settings:
+            has_custom, ep, ec, ecc = repo_pricing.effective_prices(s)
+            rows.append({
+                "model": s.model,
+                "prompt_price_per_1m": s.prompt_price_per_1m,
+                "completion_price_per_1m": s.completion_price_per_1m,
+                "cache_price_per_1m": s.cache_price_per_1m,
+                "deepinfra_model_id": s.deepinfra_model_id,
+                "deepinfra_prompt_price_per_1m": s.deepinfra_prompt_price_per_1m,
+                "deepinfra_completion_price_per_1m": s.deepinfra_completion_price_per_1m,
+                "deepinfra_cache_price_per_1m": s.deepinfra_cache_price_per_1m,
+                "openrouter_model_id": s.openrouter_model_id,
+                "openrouter_prompt_price_per_1m": s.openrouter_prompt_price_per_1m,
+                "openrouter_completion_price_per_1m": s.openrouter_completion_price_per_1m,
+                "openrouter_cache_price_per_1m": s.openrouter_cache_price_per_1m,
+                "has_custom_price": has_custom,
+                "effective_prompt_price_per_1m": ep,
+                "effective_completion_price_per_1m": ec,
+                "effective_cache_price_per_1m": ecc,
+            })
+        return {"pricing": rows}
 
     @router.put("/api/v1/pricing")
     async def update_pricing(request: Request, db: Session = Depends(get_db)):
@@ -363,7 +375,8 @@ def create_api_router(session_manager: Optional[SessionManager] = None,
     def sync_openrouter(request: Request, db: Session = Depends(get_db)):
         _check_auth(request, session_manager, auth_enabled)
         result = repo_pricing.sync_openrouter_prices(db)
-        if result["errors"]:
+        # Only fail if both sources errored; partial success is still useful.
+        if len(result.get("errors", [])) >= 2:
             raise HTTPException(502, "; ".join(result["errors"]))
         return result
 

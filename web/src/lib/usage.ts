@@ -37,10 +37,13 @@ function formatLocalDayKey(date: Date): string {
 function calculateEventCost(event: UsageEventWithNames, priceMap: Map<string, PricingEntry>): number {
   const pricing = priceMap.get(event.modelName)
   if (!pricing) return 0
+  const ep = pricing.effective_prompt_price_per_1m ?? pricing.prompt_price_per_1m
+  const ec = pricing.effective_completion_price_per_1m ?? pricing.completion_price_per_1m
+  const ecc = pricing.effective_cache_price_per_1m ?? pricing.cache_price_per_1m
   return (
-    (event.tokens.input_tokens / 1_000_000) * pricing.prompt_price_per_1m +
-    (event.tokens.output_tokens / 1_000_000) * pricing.completion_price_per_1m +
-    (event.tokens.cached_tokens / 1_000_000) * pricing.cache_price_per_1m
+    (event.tokens.input_tokens / 1_000_000) * ep +
+    (event.tokens.output_tokens / 1_000_000) * ec +
+    (event.tokens.cached_tokens / 1_000_000) * ecc
   )
 }
 

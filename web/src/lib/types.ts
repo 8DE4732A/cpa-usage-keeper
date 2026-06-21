@@ -212,10 +212,18 @@ export interface PricingEntry {
   prompt_price_per_1m: number
   completion_price_per_1m: number
   cache_price_per_1m: number
+  deepinfra_model_id?: string | null
+  deepinfra_prompt_price_per_1m?: number | null
+  deepinfra_completion_price_per_1m?: number | null
+  deepinfra_cache_price_per_1m?: number | null
   openrouter_model_id?: string | null
   openrouter_prompt_price_per_1m?: number | null
   openrouter_completion_price_per_1m?: number | null
   openrouter_cache_price_per_1m?: number | null
+  has_custom_price?: boolean
+  effective_prompt_price_per_1m?: number | null
+  effective_completion_price_per_1m?: number | null
+  effective_cache_price_per_1m?: number | null
 }
 
 export interface UsedModelsResponse {
@@ -239,8 +247,10 @@ export interface OpenRouterModelsResponse {
 }
 
 export interface SyncOpenRouterResponse {
-  matched: number
+  deepinfra_matched: number
+  openrouter_matched: number
   created: number
+  total_di_models: number
   total_or_models: number
   errors: string[]
 }
